@@ -1,6 +1,7 @@
 package com.noop.ui
 
 import com.noop.R
+import com.noop.analytics.calorie.Calories
 import androidx.compose.ui.res.stringResource
 import android.content.Context
 import androidx.compose.foundation.Canvas

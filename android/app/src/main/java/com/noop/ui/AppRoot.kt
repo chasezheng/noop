@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WaterDrop
+import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -164,6 +165,9 @@ private enum class Destination(
     Hydration("hydration", R.string.nav_hydration, Icons.Filled.WaterDrop),
     VitalSigns("vital_signs", R.string.nav_vital_signs, Icons.Filled.HealthAndSafety),
     VitalSignsDetail("vital_detail/{key}", R.string.nav_vital_signs, Icons.Filled.HealthAndSafety),
+    // Parameterised on the day rather than a metric key: this detail is one day decomposed, not a
+    // trend across days, so it has no meaning without a day and is absent from [drawerGroups].
+    Calorie("calorie/{day}", R.string.nav_total_energy, Icons.Filled.Whatshot),
     LabBook("lab_book", R.string.nav_lab_book, Icons.Filled.HealthAndSafety),
     Rhythm("rhythm", R.string.nav_rhythm, Icons.Filled.MonitorHeart),
     AppleHealth("apple_health", R.string.nav_apple_health, Icons.Filled.HealthAndSafety),
@@ -612,6 +616,7 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                         // #1862: the Coach launcher hands off here. Without this the sheet's buttons
                         // would fall back to the parameter's no-op default and silently do nothing.
                         onOpenCoach = { nav.navigateTopLevel(Destination.Coach.route) },
+                        onOpenCalorie = { day -> nav.navigate("calorie/$day") },
                         // The "workout in progress" indicator: raise the one-shot the Live screen consumes to
                         // re-open the in-exercise overlay, then route to Live. One tap from Today (iOS parity).
                         onOpenActiveWorkout = {
@@ -686,6 +691,14 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                         key = backStackEntry.arguments?.getString("key").orEmpty(),
                     )
                 }
+                composable(Destination.Calorie.route) { backStackEntry ->
+                    // An unparseable argument falls back to today rather than failing the navigation,
+                    // so a back-stack restore shows the wrong day rather than crashing.
+                    val day = runCatching {
+                        java.time.LocalDate.parse(backStackEntry.arguments?.getString("day").orEmpty())
+                    }.getOrDefault(java.time.LocalDate.now())
+                    CalorieScreen(vm = viewModel, day = day)
+                }
                 // --- v5 pillar screens (Wave 3 wiring) ---
                 composable(Destination.InsightsHub.route) { InsightsHubScreen(viewModel) }
                 composable(Destination.LabBook.route) { LabBookScreen(viewModel) }
@@ -709,13 +722,36 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                 composable(Destination.Notifications.route) { NotificationsSettingsScreen(viewModel) }
                 composable(Destination.PowerSaving.route) { PowerSavingScreen(viewModel) }
                 composable(Destination.Settings.route) {
+                    // A dialog rather than a destination, so the Profile card behind it stays on screen:
+                    // its weight, height and age feed every number the dialog shows.
+                    var showCalorieTracking by remember { mutableStateOf(false) }
                     SettingsScreen(
                         viewModel,
                         onOpenTestCentre = { nav.navigate(Destination.TestCentre.route) },
                         onOpenBackupSync = { nav.navigate(Destination.BackupSync.route) },
                         onOpenSelfHostedPush = { nav.navigate(Destination.SelfHostedPush.route) },
                         onOpenStepsCalibration = { nav.navigate(Destination.StepsCalibration.route) },
+                        onOpenCalorieTracking = { showCalorieTracking = true },
                     )
+                    if (showCalorieTracking) {
+                        val profile = remember(context) { ProfileStore.from(context) }
+                        var revision by remember { mutableStateOf(0) }
+                        // The store wraps preferences rather than snapshot state, so reading this
+                        // counter is what repaints the dialog on an edit.
+                        @Suppress("UNUSED_VARIABLE") val tick = revision
+                        CalorieTrackingDialog(
+                            vm = viewModel,
+                            profile = profile,
+                            onProfileChanged = { revision++ },
+                            // Every stored day was scored under the previous settings, so dismissing
+                            // after an edit re-scores the window. Gated on `revision`, so opening the
+                            // dialog to read it costs nothing.
+                            onDismiss = {
+                                showCalorieTracking = false
+                                if (revision > 0) viewModel.rescoreAfterCalorieSettingsChanged()
+                            },
+                        )
+                    }
                 }
                 composable(Destination.StepsCalibration.route) {
                     val profile = remember(context) { ProfileStore.from(context) }

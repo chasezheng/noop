@@ -797,6 +797,17 @@ interface WhoopDao : DeviceRegistryDao {
     fun dailyMetricsRangeFlow(deviceId: String, from: String, to: String): Flow<List<DailyMetric>>
 
     /**
+     * The most recent day at or before [day] under [deviceId] that carries a resting HR.
+     *
+     * A day key rather than a value, so the caller can read that day across every source.
+     */
+    @Query(
+        "SELECT day FROM dailyMetric WHERE deviceId = :deviceId AND day <= :day " +
+            "AND restingHr IS NOT NULL ORDER BY day DESC LIMIT 1"
+    )
+    suspend fun latestRestingHrDay(deviceId: String, day: String): String?
+
+    /**
      * Delete a source's cached daily rows whose day-key is in [from, to] (inclusive, yyyy-MM-dd
      * lexicographic = chronological). The #277 local-day re-bucketing migration uses this to drop the
      * computed ("-noop") UTC-keyed rows across the recompute window before re-upserting the LOCAL-keyed
@@ -852,14 +863,13 @@ interface WhoopDao : DeviceRegistryDao {
      * writes totals + vitals) on a day a computed ("-noop") source also covers. A sparse row like
      * this shadows the computed day in the imported-wins merge (#112), blanking Today / regressing
      * Sleep stages. CSV-imported days carry stage minutes + efficiency and are never matched.
+     *
+     * The four vitals columns are excluded too, so a row still carrying a resting HR, HRV, SpO2 or
+     * respiratory rate survives: deleting it would throw away the only reading anyone has for that
+     * day. A matching row under the strap source is therefore either a leftover the re-homing
+     * migration declined to move, on a primary-key collision, or an empty husk.
      */
-    @Query(
-        "DELETE FROM dailyMetric WHERE deviceId = 'my-whoop' " +
-            "AND efficiency IS NULL AND deepMin IS NULL AND remMin IS NULL AND lightMin IS NULL " +
-            "AND disturbances IS NULL AND recovery IS NULL AND strain IS NULL " +
-            "AND steps IS NULL AND activeKcalEst IS NULL " +
-            "AND day IN (SELECT day FROM dailyMetric d WHERE d.deviceId LIKE '%-noop')"
-    )
+    @Query(PURGE_HC_SHADOWED_DAILY_SQL)
     suspend fun purgeHcShadowedDailyMetrics(): Int
 
     /**
@@ -1027,6 +1037,20 @@ interface WhoopDao : DeviceRegistryDao {
         /** The constant device-id the daily marker projection is written under, so Compare/Explore/
          *  Coach see markers as a single-source series (Swift WhoopStore.labBookSourceId). */
         const val LAB_BOOK_SOURCE_ID = "lab-book"
+
+        /**
+         * The statement behind [purgeHcShadowedDailyMetrics].
+         *
+         * A constant so a plain JVM test can read the predicate itself rather than a hand-written
+         * mirror of it. Room inlines the constant, so the generated query is the literal.
+         */
+        const val PURGE_HC_SHADOWED_DAILY_SQL =
+            "DELETE FROM dailyMetric WHERE deviceId = 'my-whoop' " +
+                "AND efficiency IS NULL AND deepMin IS NULL AND remMin IS NULL AND lightMin IS NULL " +
+                "AND disturbances IS NULL AND recovery IS NULL AND strain IS NULL " +
+                "AND steps IS NULL AND activeKcalEst IS NULL " +
+                "AND restingHr IS NULL AND avgHrv IS NULL AND spo2Pct IS NULL AND respRateBpm IS NULL " +
+                "AND day IN (SELECT day FROM dailyMetric d WHERE d.deviceId LIKE '%-noop')"
     }
 
     // MARK: - One-time #34 refile: separate legacy Health Connect data from the Apple Health bucket.

@@ -66,3 +66,9 @@ jobs:
 
       - name: Run unit tests
         run: ./gradlew testFullDebugUnitTest
+
+      # :calbench compiles the app's own analytics sources a second time, for a plain JVM. Nothing
+      # depends on it, so without its own step it rots silently the first time an include-list file
+      # picks up an Android import.
+      - name: Build and test the calorie harness
+        run: ./gradlew :calbench:test :calbench:installDist

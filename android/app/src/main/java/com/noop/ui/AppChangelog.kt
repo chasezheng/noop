@@ -1,6 +1,7 @@
 package com.noop.ui
 
 import com.noop.R
+import com.noop.analytics.calorie.Calories
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.Science

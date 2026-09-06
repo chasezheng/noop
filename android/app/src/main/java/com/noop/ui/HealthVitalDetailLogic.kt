@@ -1,6 +1,7 @@
 package com.noop.ui
 
 import com.noop.analytics.Baselines
+import com.noop.data.DailyMetric
 import com.noop.data.Vo2MaxEstimator
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -16,6 +17,18 @@ internal data class VitalReading(
     val value: Double,
     val source: String,
 )
+
+/**
+ * The source id to stamp on one vital reading: the arbitration winner where there was one, else the
+ * row's own deviceId.
+ *
+ * A merged row carries one deviceId for every column, so without this a value from another source is
+ * credited to whichever source owns the rest of the row.
+ */
+internal fun vitalReadingSource(row: DailyMetric, uiKey: String, vitalSources: VitalSourceMap): String {
+    val key = healthConnectVitalKey(uiKey) ?: return row.deviceId
+    return vitalSources[row.day]?.get(key)?.id ?: row.deviceId
+}
 
 internal const val VO2_MAX_ATTRIBUTION_PREFIX = "vo2max-estimator:"
 

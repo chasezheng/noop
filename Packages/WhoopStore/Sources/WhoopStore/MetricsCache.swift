@@ -99,7 +99,7 @@ public struct DailyMetric: Equatable, Codable {
     // On-device daily activity totals (v11 columns, APPROXIMATE estimates). Both nullable, so
     // imported/cloud rows that never carry them stay nil and old call sites are unaffected.
     public let steps: Int?             // daily/file step total from the cumulative @57 counter or activity import
-    public let activeKcalEst: Double?  // whole-day HR-only calorie estimate (kcal)
+    public let activeKcalEst: Double?  // whole-day ACTIVE energy (kcal) — surplus ABOVE resting
     // WHOOP 4.0 raw SpO2 PPG ADC means over detected sleep (v23 columns, #93). These are the RAW
     // red/IR optical channels banked on the v24 historical layout (spo2_red@68 / spo2_ir@70), NOT a
     // calibrated blood-oxygen % — that needs WHOOP's proprietary curve. Both nullable and on-device
@@ -634,6 +634,19 @@ extension WhoopStore {
                                        // back carries it and no caller has to ask the store again.
                                        deviceId: deviceId)
                 }
+        }
+    }
+
+    /// The most recent day at or before `day` under `deviceId` that carries a resting HR.
+    ///
+    /// A day key rather than a value, so the caller can read that day across every source.
+    /// Mirrors Kotlin `WhoopDao.latestRestingHrDay`.
+    public func latestRestingHrDay(deviceId: String, day: String) async throws -> String? {
+        try syncRead { db in
+            try String.fetchOne(db, sql: """
+                SELECT day FROM dailyMetric WHERE deviceId = ? AND day <= ?
+                AND restingHr IS NOT NULL ORDER BY day DESC LIMIT 1
+                """, arguments: [deviceId, day])
         }
     }
 

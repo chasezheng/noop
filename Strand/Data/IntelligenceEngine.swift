@@ -513,13 +513,14 @@ final class IntelligenceEngine: ObservableObject {
     /// Method selection is captured at compute time; UI readers must never reconstruct it from today's
     /// profile because changing/removing a waist is a legitimate transition between estimators.
     static func vo2MaxProvenance(
-        points: [MetricPoint], waistCm: Double
+        points: [MetricPoint], waistCm: Double, vo2maxOverride: Double = 0.0
     ) -> [ScoreInputProvenanceRow] {
         guard let point = points.first(where: { $0.key == "vo2max_est" }) else { return [] }
         return [ScoreInputProvenanceRow(
             day: point.day,
             key: point.key,
-            sourceId: Vo2MaxEstimator.forWaistCm(waistCm).rawValue
+            sourceId: Vo2MaxEstimator.forProfile(waistCm: waistCm,
+                                                 vo2maxOverride: vo2maxOverride).rawValue
         )]
     }
 
@@ -576,6 +577,30 @@ final class IntelligenceEngine: ObservableObject {
         // call returns with `note` unset by it. Use the lock state: if a concurrent run was in progress
         // the flag stays unset so the next launch retries , cheap, and correctness over a one-time cost.
         if !computing { UserDefaults.standard.set(true, forKey: Self.effortRescoreFlagKey) }
+    }
+
+    /// The flag guarding the one-shot calorie-basis rescore below. Set once the pass completes.
+    static let calorieBasisRescoreFlagKey = "intelligence.calorieBasis.v1.done"
+
+    /// A one-shot rescore of the whole history, run once on upgrade.
+    ///
+    /// A row written by an older build holds the whole-day total where the column now holds the
+    /// active term alone. Every such day is recomputed from its raw heart rate rather than repaired
+    /// by subtracting a basal estimate: subtraction cannot tell a legacy total from an
+    /// already-correct active value, so it would subtract twice for anyone who upgrades after the
+    /// first pass.
+    ///
+    /// Best-effort repair rather than a migration. Imported rows are never rewritten, and a day whose
+    /// raw heart rate is gone keeps its old value.
+    ///
+    /// Parity: Android `analytics/CalorieBasisRescore.kt`.
+    func runCalorieBasisRescoreIfNeeded(historyDays: Int = 4000) async {
+        guard !UserDefaults.standard.bool(forKey: Self.calorieBasisRescoreFlagKey) else { return }
+        await analyzeRecent(maxDays: historyDays)
+        // Mark done only if the pass completed. A call skipped because another tick held `computing`
+        // must leave the flag unset, so the next launch retries rather than recording a repair that
+        // never ran.
+        if !computing { UserDefaults.standard.set(true, forKey: Self.calorieBasisRescoreFlagKey) }
     }
 
     /// UserDefaults flag guarding the one-shot #547 implausible-timestamp DB heal (below). Set once the
@@ -1254,6 +1279,31 @@ final class IntelligenceEngine: ObservableObject {
                 } else {
                     dayGrav = (try? await store.gravitySamples(deviceId: owner, from: dayMid, to: dayEnd, limit: 200_000)) ?? []
                 }
+                // The activity-day heart rate the calorie model scores. The activity day opens at
+                // local midnight, so it is the calendar day and nothing extra is read.
+                let calorieHr: [HRSample] = dayHr
+
+                // Resting HR across every source, for a day that staged no sleep of its own and would
+                // otherwise be scored against an invented value.
+                //
+                // Each source is asked for the latest day it has one and only that day is read back,
+                // rather than pulling whole histories for every day of the pass.
+                let rhrSources = Self.restingHrSourceIds(owner: owner)
+                var latestRhrDay: String? = nil
+                for src in rhrSources {
+                    if let d = try? await store.latestRestingHrDay(deviceId: src, day: day),
+                       latestRhrDay == nil || d > latestRhrDay! {
+                        latestRhrDay = d
+                    }
+                }
+                var calorieRestingHR: Double? = nil
+                if let latest = latestRhrDay {
+                    var rows: [DailyMetric] = []
+                    for src in rhrSources {
+                        rows += (try? await store.dailyMetrics(deviceId: src, from: latest, to: latest)) ?? []
+                    }
+                    calorieRestingHR = AnalyticsEngine.calorieRestingHR(rows: rows, day: day)
+                }
 
                 // CONSUME (#531 / #175): the strap's OWN band sleep_state for the night window as timestamped
                 // (ts, state) samples, so the H7 morning-stillness guard can confirm a borderline re-onset
@@ -1360,7 +1410,8 @@ final class IntelligenceEngine: ObservableObject {
                                                      hr: hr, rr: rr, resp: resp,
                                                      vendorResp: vendorResp, gravity: grav,
                                                      steps: steps, dayHr: dayHr, daySteps: daySteps,
-                                                     dayGravity: dayGrav,
+                                                     dayGravity: dayGrav, calorieHr: calorieHr,
+                                                     calorieRestingHR: calorieRestingHR,
                                                      skinTemp: skin,
                                                      skinTempFamily: skinFamily,   // #938
                                                      skinTempAnchorRaw: skinAnchorRaw,   // #938 second capture
@@ -1388,7 +1439,10 @@ final class IntelligenceEngine: ObservableObject {
                                                      // ring buffer isn't flooded; every night keeps the summary.
                                                      hrvWindowDetail: dayStart == nowLocalMidnight,
                                                      deepHrvWindow: deepHrvWindow,
-                                                     effortMethod: effortMethodGlobal)
+                                                     effortMethod: effortMethodGlobal,
+                                                     // Bounds the basal term to the elapsed part of an
+                                                     // in-progress day; a past day elapses in full.
+                                                     nowTs: now)
                 dayScoreSeconds += Date().timeIntervalSince(tScore0)
                 // #195: whole-night HRV cleaning-pipeline summary for the always-on strap log, so a "reads ~2x
                 // too high" report is triageable without the HRV test mode: RMSSD vs SDNN (rmssd >> sdnn =
@@ -3160,6 +3214,14 @@ final class IntelligenceEngine: ObservableObject {
     private static func recomputeSkinTempDev(_ nightly: Double?, _ base: BaselineState?) -> Double? {
         guard let v = nightly, let b = base, b.usable else { return nil }
         return (Baselines.deviation(v, state: b).delta * 100.0).rounded() / 100.0
+    }
+
+    /// Every source id that can own a resting HR for the calorie models: the measured ids, and their
+    /// computed siblings.
+    nonisolated static func restingHrSourceIds(owner: String) -> [String] {
+        let imported = owner == Repository.whoopSource ? [Repository.whoopSource]
+                                                       : [owner, Repository.whoopSource]
+        return imported + imported.map { $0 + "-noop" }
     }
 
     /// The user's habitual midsleep (local time-of-day seconds), or nil under `habitualMinDays` of

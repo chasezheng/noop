@@ -2,6 +2,9 @@ package com.noop.data
 
 import android.content.Context
 import androidx.room.withTransaction
+import com.noop.analytics.FusionInput
+import com.noop.analytics.FusionResolver
+import com.noop.analytics.FusionSource
 import com.noop.protocol.DroppedRtcEvent
 import com.noop.protocol.RrSourceChannel
 import kotlinx.coroutines.flow.Flow
@@ -9,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlin.math.roundToInt
 
 /**
@@ -401,6 +405,23 @@ data class DataFreshness(
 
     companion object {
         val EMPTY = DataFreshness()
+    }
+}
+
+/**
+ * A merged daily series, with the per-field provenance the merge established.
+ *
+ * A [DailyMetric] carries one deviceId, so a row that took one vital from another source still reads
+ * as whichever source owns the rest of it, and a label keyed on that deviceId credits the wrong one.
+ * [vitalSources] records which source won each arbitrated field, so a label can be drawn from that
+ * instead. Read-time only: nothing here is stored.
+ */
+internal data class MergedDailySeries(
+    val rows: List<DailyMetric>,
+    val vitalSources: Map<String, Map<String, FusionSource>>,
+) {
+    companion object {
+        val EMPTY = MergedDailySeries(emptyList(), emptyMap())
     }
 }
 
@@ -1796,6 +1817,7 @@ class WhoopRepository(
      *  [importedSourceIdsFor] / [computedSourceIdsFor] for the SPINE / #814 + HIGH-2 rationale). */
     fun importedSourceIds(activeDeviceId: String): List<String> = importedSourceIdsFor(activeDeviceId)
     fun computedSourceIds(activeDeviceId: String): List<String> = computedSourceIdsFor(activeDeviceId)
+    fun vitalsSourceIds(activeDeviceId: String): List<String> = vitalsSourceIdsFor(activeDeviceId)
 
     /**
      * CAPTURE-D (#797): the on-device DATA VOLUME read FRESH from the store (never the reactive dashboard
@@ -1880,6 +1902,9 @@ class WhoopRepository(
      * union is what keeps that history visible. A single-WHOOP install resolves to "my-whoop" only, so this
      * is byte-identical there. Active id wins per day inside each bucket ([unionByDay]); imports still win
      * over computed across buckets ([mergeDaily]).
+     *
+     * Health Connect's daily rows join at the end through [mergeHealthConnectVitals], which arbitrates
+     * the four vitals rather than coalescing them, so a strap day keeps its own numbers.
      */
     suspend fun daysMerged(deviceId: String): List<DailyMetric> {
         val imported = unionByDay(importedSourceIds(deviceId).map { dao.days(it) })
@@ -1890,7 +1915,12 @@ class WhoopRepository(
         // every computed source in the union so a re-add doesn't lose an earlier-id edit's precedence.
         val editedSessions = computedSourceIds(deviceId).flatMap { dao.editedSleepSessions(it) }
         return mergeActivityFileSteps(
-            mergeDaily(imported = imported, computed = computed, userEditedDays = userEditedDays(editedSessions)),
+            mergeHealthConnectVitals(
+                mergeDaily(imported = imported, computed = computed, userEditedDays = userEditedDays(editedSessions)),
+                imported = imported,
+                computed = computed,
+                healthConnect = dao.days(HEALTH_CONNECT_SOURCE),
+            ),
             activityFile,
         )
     }
@@ -1916,6 +1946,8 @@ class WhoopRepository(
      *
      * H5 (#509): also keys off the computed sources' user-edited sessions so a hand-edited night's sleep
      * figures keep precedence over a re-imported night (and the chart re-emits when an edit lands).
+     *
+     * Health Connect is a fifth source here, folded in by [mergeHealthConnectVitals].
      */
     fun daysMergedFlow(deviceId: String): Flow<List<DailyMetric>> =
         combine(
@@ -1923,9 +1955,15 @@ class WhoopRepository(
             unionDaysFlow(computedSourceIds(deviceId).map { dao.daysFlow(it) }),
             dao.daysFlow(ACTIVITY_FILE_SOURCE),
             editedSleepSessionsFlow(deviceId),
-        ) { imported, computed, activityFile, edited ->
+            dao.daysFlow(HEALTH_CONNECT_SOURCE),
+        ) { imported, computed, activityFile, edited, healthConnect ->
             mergeActivityFileSteps(
-                mergeDaily(imported = imported, computed = computed, userEditedDays = userEditedDays(edited)),
+                mergeHealthConnectVitals(
+                    mergeDaily(imported = imported, computed = computed, userEditedDays = userEditedDays(edited)),
+                    imported = imported,
+                    computed = computed,
+                    healthConnect = healthConnect,
+                ),
                 activityFile,
             )
         }
@@ -1939,25 +1977,40 @@ class WhoopRepository(
      * Age / Vitality windows). Rows come back oldest-first, IDENTICAL ordering to [daysMergedFlow], so the
      * consumer (Today / illness watch / Trends) is unchanged apart from no longer carrying ancient days the
      * UI never shows. Edited-day precedence still reads the userEdited sessions (not day-capped: the set is
-     * already tiny), so a hand-edited recent night keeps winning.
+     * already tiny), so a hand-edited recent night keeps winning. Health Connect is capped like the
+     * rest, so no source reintroduces an unbounded read.
      *
      * Like [daysMergedFlow] the imported/computed buckets are the active-id ∪ canonical "my-whoop" union
      * (SPINE / #814 + HIGH-2): the cap stays PER SOURCE, so the union is still bounded (at most two capped
      * pages per bucket) and #797's "never re-merge the whole 3000-day history" guarantee holds.
      */
     fun recentDaysMergedFlow(deviceId: String): Flow<List<DailyMetric>> =
+        recentDaysMergedSeriesFlow(deviceId).map { it.rows }
+
+    /**
+     * [recentDaysMergedFlow] together with the per-field winners the merge decided, which the merged
+     * rows cannot carry.
+     *
+     * Collect this one flow and derive the rows from it: collecting both re-runs the whole merge.
+     */
+    internal fun recentDaysMergedSeriesFlow(deviceId: String): Flow<MergedDailySeries> =
         combine(
             unionDaysFlow(importedSourceIds(deviceId).map { dao.recentDaysFlow(it, RECENT_DAYS_CAP) }),
             unionDaysFlow(computedSourceIds(deviceId).map { dao.recentDaysFlow(it, RECENT_DAYS_CAP) }),
             dao.recentDaysFlow(ACTIVITY_FILE_SOURCE, RECENT_DAYS_CAP),
             editedSleepSessionsFlow(deviceId),
-        ) { imported, computed, activityFile, edited ->
+            dao.recentDaysFlow(HEALTH_CONNECT_SOURCE, RECENT_DAYS_CAP),
+        ) { imported, computed, activityFile, edited, healthConnect ->
             // recentDaysFlow returns newest-first (DESC LIMIT); mergeDaily re-sorts ascending by day, so the
-            // emitted order matches daysMergedFlow exactly.
-            mergeActivityFileSteps(
+            // emitted order matches daysMergedFlow exactly. Health Connect is capped the same way, so
+            // the bound holds with the extra source.
+            val fused = healthConnectVitalMerge(
                 mergeDaily(imported = imported, computed = computed, userEditedDays = userEditedDays(edited)),
-                activityFile,
+                imported = imported,
+                computed = computed,
+                healthConnect = healthConnect,
             )
+            MergedDailySeries(mergeActivityFileSteps(fused.rows, activityFile), fused.vitalSources)
         }
 
     /** Pooled user-edited sleep sessions across every computed source in the active∪canonical union, so a
@@ -2025,6 +2078,10 @@ class WhoopRepository(
     suspend fun detectedWorkoutsUnion(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT): List<WorkoutRow> =
         dedupWorkoutsByKey(rawWhoopSourceIds(deviceId).map { "$it-noop" }
             .flatMap { dao.workouts(it, from, to, limit) })
+
+    /** The most recent day at or before [day] under [deviceId] that carries a resting HR. */
+    suspend fun latestRestingHrDay(deviceId: String, day: String): String? =
+        dao.latestRestingHrDay(deviceId, day)
 
     /** Cached daily metrics for the inclusive day range [from, to] (YYYY-MM-DD), oldest first. */
     suspend fun dailyMetrics(deviceId: String, from: String, to: String): List<DailyMetric> =
@@ -2386,6 +2443,33 @@ class WhoopRepository(
             return (listOf(ownerComputed) + computedSourceIdsFor(activeDeviceId)).distinct()
         }
 
+        /**
+         * Every daily source a vitals figure may be read from, in trust order: the imported strap ids,
+         * then their computed siblings, then Health Connect.
+         *
+         * One vocabulary, so a source added here reaches every vitals reader at once.
+         *
+         * Android-only: no other platform has a Health Connect importer.
+         */
+        fun vitalsSourceIdsFor(activeDeviceId: String): List<String> =
+            importedSourceIdsFor(activeDeviceId) + computedSourceIdsFor(activeDeviceId) + HEALTH_CONNECT_SOURCE
+
+        /**
+         * Drop the Health Connect rows of any day a strap-native source already measured a resting HR
+         * on.
+         *
+         * An ordered source list is not enough on its own: a reader that averages every row it is
+         * handed for one day would blend a phone aggregate into the strap's figure rather than defer
+         * to it. Recency still decides across days, so a Health Connect row on a later day survives.
+         */
+        internal fun preferMeasuredRestingHr(rows: List<DailyMetric>): List<DailyMetric> {
+            val measured = rows
+                .filter { it.deviceId != HEALTH_CONNECT_SOURCE && it.restingHr != null }
+                .mapTo(HashSet()) { it.day }
+            if (measured.isEmpty()) return rows
+            return rows.filter { it.deviceId != HEALTH_CONNECT_SOURCE || it.day !in measured }
+        }
+
         /** Pick the winner among per-source LATEST rows ([computedSourceIdsFor] order, active-strap
          *  first): the strictly newest day wins; a shared newest day keeps the FIRST seen (the active
          *  strap) — byte-identical to what `mergeComputedSeriesUnion(...).lastOrNull()` yields on the
@@ -2513,6 +2597,9 @@ class WhoopRepository(
                 appleCompatibleKey(key)?.let {
                     candidates.add(MetricSourceCandidate(APPLE_HEALTH_SOURCE, it))
                 }
+                // Health Connect last, under both strap sources and Apple. Its daily rows carry the
+                // WHOOP key vocabulary already, so no key remap is applied to them.
+                candidates.add(MetricSourceCandidate(HEALTH_CONNECT_SOURCE, key))
                 return uniqued(candidates)
             }
             if (preferredSource == APPLE_HEALTH_SOURCE) {
@@ -2880,6 +2967,84 @@ class WhoopRepository(
                 }
             }
             return byDay.values.sortedBy { it.day }
+        }
+
+        /** The resolver keys of the four vitals [mergeHealthConnectVitals] arbitrates. */
+        internal val HEALTH_CONNECT_VITAL_KEYS = listOf("rhr", "hrv", "spo2", "resp_rate")
+
+        /**
+         * Fold the Health Connect daily row into the merged series, arbitrating each vital rather than
+         * coalescing blindly.
+         *
+         * Each of the four vitals goes through [FusionResolver], which ranks a strap measurement above
+         * a phone aggregate, so a value is taken from Health Connect only when it wins and a
+         * strap-covered day is untouched. [imported] and [computed] arrive unmerged because the
+         * arbitration must know which of the two supplied a value.
+         *
+         * A day [base] does not cover at all takes the Health Connect row whole, without which a
+         * wearer with no strap history sees nothing. Run before [mergeActivityFileSteps], so a day
+         * carrying only activity-file steps still counts as uncovered.
+         *
+         * Android-only: no other platform has a Health Connect importer.
+         */
+        internal fun mergeHealthConnectVitals(
+            base: List<DailyMetric>,
+            imported: List<DailyMetric>,
+            computed: List<DailyMetric>,
+            healthConnect: List<DailyMetric>,
+        ): List<DailyMetric> =
+            healthConnectVitalMerge(base, imported, computed, healthConnect).rows
+
+        /**
+         * [mergeHealthConnectVitals] together with the per-field winners it decided.
+         *
+         * A merged row keeps one deviceId, so a folded-in value is otherwise indistinguishable from
+         * the row's own. A day is recorded only where the arbitration ran and Health Connect won it;
+         * every other day already carries the right deviceId.
+         */
+        internal fun healthConnectVitalMerge(
+            base: List<DailyMetric>,
+            imported: List<DailyMetric>,
+            computed: List<DailyMetric>,
+            healthConnect: List<DailyMetric>,
+        ): MergedDailySeries {
+            if (healthConnect.isEmpty()) return MergedDailySeries(base, emptyMap())
+            val importedByDay = imported.associateBy { it.day }
+            val computedByDay = computed.associateBy { it.day }
+            val byDay = LinkedHashMap<String, DailyMetric>()
+            val vitalSources = LinkedHashMap<String, Map<String, FusionSource>>()
+            for (row in base) byDay[row.day] = row
+            for (hc in healthConnect) {
+                val existing = byDay[hc.day]
+                if (existing == null) {
+                    byDay[hc.day] = hc
+                    continue
+                }
+                var out: DailyMetric = existing
+                val winners = LinkedHashMap<String, FusionSource>()
+                for (key in HEALTH_CONNECT_VITAL_KEYS) {
+                    val hcValue = dailyColumn(key, hc) ?: continue
+                    val inputs = buildList {
+                        importedByDay[hc.day]?.let { dailyColumn(key, it) }
+                            ?.let { add(FusionInput(FusionSource.WHOOP_IMPORT, it)) }
+                        computedByDay[hc.day]?.let { dailyColumn(key, it) }
+                            ?.let { add(FusionInput(FusionSource.NOOP_COMPUTED, it)) }
+                        add(FusionInput(FusionSource.HEALTH_CONNECT, hcValue))
+                    }
+                    val point = FusionResolver.resolve(key, inputs) ?: continue
+                    if (point.winningSource != FusionSource.HEALTH_CONNECT) continue
+                    winners[key] = point.winningSource
+                    out = when (key) {
+                        "rhr" -> out.copy(restingHr = point.value.roundToInt())
+                        "hrv" -> out.copy(avgHrv = point.value)
+                        "spo2" -> out.copy(spo2Pct = point.value)
+                        else -> out.copy(respRateBpm = point.value)
+                    }
+                }
+                if (winners.isNotEmpty()) vitalSources[hc.day] = winners
+                byDay[hc.day] = out
+            }
+            return MergedDailySeries(byDay.values.sortedBy { it.day }, vitalSources)
         }
 
         internal fun mergeActivityFileSteps(

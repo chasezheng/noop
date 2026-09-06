@@ -2288,6 +2288,10 @@ final class Repository: ObservableObject {
             if let appleKey = appleCompatibleKey(forWhoopKey: key) {
                 candidates.append(MetricSourceCandidate(source: appleHealthSource, key: appleKey))
             }
+            // Health Connect last, under both strap sources and Apple. Its daily rows carry the WHOOP
+            // key vocabulary already, so no key remap is applied to them. No platform here writes such
+            // a row; it is kept so the resolver stays identical to Android's.
+            candidates.append(MetricSourceCandidate(source: healthConnectSource, key: key))
             return uniqued(candidates)
         }
         if preferredSource == appleHealthSource {

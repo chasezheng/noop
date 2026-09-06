@@ -10,7 +10,36 @@ final class BackupSettingsTests: XCTestCase {
     // MARK: - Encode / decode round trip
 
     func testEncodeDecodeRoundTripsEveryWhitelistedKey() throws {
-        let values: [String: Any] = [
+        // Every field of the Android-only measured-basal model. This platform never reads them, so
+        // nothing but this test says they still cross the wire the two platforms share. Kept in its
+        // own literal: `[String: Any]` is heterogeneous, and one 44-entry literal is slow to type-check.
+        let measuredBasal: [String: Any] = [
+            "calorie.sessionGapS": 900,
+            "calorie.minHrCoverageFrac": 0.6,
+            "calorie.hampelRadiusS": 7,
+            "calorie.hampelSigmas": 2.5,
+            "calorie.suppressPeaks": 0,
+            "calorie.peakBlockS": 240,
+            "calorie.peakPercentile": 0.93,
+            "calorie.motionStillG": 0.015,
+            "calorie.motionSmoothS": 12,
+            "calorie.basalMinWindowS": 420,
+            "calorie.basalHrRangeBpm": 8.0,
+            "calorie.basalStillFrac": 0.95,
+            "calorie.basalBeatCoverageFrac": 0.4,
+            "calorie.restSmoothS": 45,
+            "calorie.restSmoothMinSamples": 25,
+            "calorie.basalHrSeedOffsetBpm": 4.0,
+            "calorie.reserveRampBandBpm": 12.0,
+            "calorie.measuredBasalKcalDay": 1577.0,
+            "calorie.basalFatNight": 0.75,
+            "calorie.basalFatDay": 0.35,
+            "calorie.basalFatDayStartHour": 9.0,
+            "calorie.basalFatDayEndHour": 21.0,
+            "calorie.activeFatAtZone1": 0.95,
+            "calorie.activeFatAtZone2Top": 0.6,
+        ]
+        let values: [String: Any] = ([
             "profile.age": 34,
             "profile.sex": "female",
             "profile.weightKg": 62.5,
@@ -28,7 +57,17 @@ final class BackupSettingsTests: XCTestCase {
             // #1361: custom journal behaviours, a newline-joined name list — the embedded newline must
             // survive the JSON round-trip (and stay byte-identical to Android's pref value).
             "journal.customBehaviors": "Cold plunge\nMagnesium",
-        ]
+            // A measured value and the calorie settings behind the wearer's day totals. Booleans ride
+            // the Int kind: the wire has none.
+            "profile.vo2max": 47.5,
+            "calorie.model": "hybrid",
+            "calorie.preferOnDevice": 1,
+            "calorie.dayActiveHRRFraction": 0.4,
+            "calorie.boutActiveHRRFraction": 0.3,
+            "calorie.activeAccrualMET": 1.6,
+            "calorie.dynAccelMETGainPerG": 28.0,
+            "calorie.hrFallbackWhenNoMET": 0,
+        ] as [String: Any]).merging(measuredBasal) { current, _ in current }
         let data = try XCTUnwrap(BackupSettings.encode(values))
         let back = BackupSettings.decode(data)
 
@@ -46,7 +85,41 @@ final class BackupSettingsTests: XCTestCase {
         XCTAssertEqual(back["dayCycle.mode"] as? String, "sleep_onset")
         XCTAssertEqual(back["today.hostedCards"] as? String, "[\"sleep.sleepMarks\"]")
         XCTAssertEqual(back["journal.customBehaviors"] as? String, "Cold plunge\nMagnesium")
+        XCTAssertEqual(back["profile.vo2max"] as? Double, 47.5)
+        XCTAssertEqual(back["calorie.model"] as? String, "hybrid")
+        XCTAssertEqual(back["calorie.preferOnDevice"] as? Int, 1)
+        XCTAssertEqual(back["calorie.dayActiveHRRFraction"] as? Double, 0.4)
+        XCTAssertEqual(back["calorie.boutActiveHRRFraction"] as? Double, 0.3)
+        XCTAssertEqual(back["calorie.activeAccrualMET"] as? Double, 1.6)
+        XCTAssertEqual(back["calorie.dynAccelMETGainPerG"] as? Double, 28.0)
+        XCTAssertEqual(back["calorie.hrFallbackWhenNoMET"] as? Int, 0)
+        XCTAssertEqual(back["calorie.sessionGapS"] as? Int, 900)
+        XCTAssertEqual(back["calorie.minHrCoverageFrac"] as? Double, 0.6)
+        XCTAssertEqual(back["calorie.hampelRadiusS"] as? Int, 7)
+        XCTAssertEqual(back["calorie.hampelSigmas"] as? Double, 2.5)
+        XCTAssertEqual(back["calorie.suppressPeaks"] as? Int, 0)
+        XCTAssertEqual(back["calorie.peakBlockS"] as? Int, 240)
+        XCTAssertEqual(back["calorie.peakPercentile"] as? Double, 0.93)
+        XCTAssertEqual(back["calorie.motionStillG"] as? Double, 0.015)
+        XCTAssertEqual(back["calorie.motionSmoothS"] as? Int, 12)
+        XCTAssertEqual(back["calorie.basalMinWindowS"] as? Int, 420)
+        XCTAssertEqual(back["calorie.basalHrRangeBpm"] as? Double, 8.0)
+        XCTAssertEqual(back["calorie.basalStillFrac"] as? Double, 0.95)
+        XCTAssertEqual(back["calorie.basalBeatCoverageFrac"] as? Double, 0.4)
+        XCTAssertEqual(back["calorie.restSmoothS"] as? Int, 45)
+        XCTAssertEqual(back["calorie.restSmoothMinSamples"] as? Int, 25)
+        XCTAssertEqual(back["calorie.basalHrSeedOffsetBpm"] as? Double, 4.0)
+        XCTAssertEqual(back["calorie.reserveRampBandBpm"] as? Double, 12.0)
+        XCTAssertEqual(back["calorie.measuredBasalKcalDay"] as? Double, 1577.0)
+        XCTAssertEqual(back["calorie.basalFatNight"] as? Double, 0.75)
+        XCTAssertEqual(back["calorie.basalFatDay"] as? Double, 0.35)
+        XCTAssertEqual(back["calorie.basalFatDayStartHour"] as? Double, 9.0)
+        XCTAssertEqual(back["calorie.basalFatDayEndHour"] as? Double, 21.0)
+        XCTAssertEqual(back["calorie.activeFatAtZone1"] as? Double, 0.95)
+        XCTAssertEqual(back["calorie.activeFatAtZone2Top"] as? Double, 0.6)
         XCTAssertEqual(back.count, values.count, "Nothing extra should appear")
+        XCTAssertEqual(BackupSettings.whitelist.count, values.count,
+                       "Every whitelisted key must be exercised here")
     }
 
     func testEncodeIsDeterministic() throws {

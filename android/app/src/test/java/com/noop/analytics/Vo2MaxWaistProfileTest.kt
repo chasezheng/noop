@@ -1,5 +1,6 @@
 package com.noop.analytics
 
+import com.noop.analytics.calorie.Calories
 import com.noop.data.DailyMetric
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -83,4 +84,27 @@ class Vo2MaxWaistProfileTest {
         assertNotNull(nes)
         assertEquals(nes!!, withWaist!!, 0.001)
     }
+
+    /**
+     * The measured value the wearer entered outranks BOTH estimators — with a waist set and without —
+     * and the point it writes says so. A number typed from a real test is not an estimate, and letting
+     * either formula overwrite it would leave the wearer with no way to correct what NOOP infers.
+     */
+    @Test fun aMeasuredValueOutranksBothEstimators() {
+        val measured = profile(92.0).copy(vo2maxOverride = 47.5)
+        val rows = IntelligenceEngine.fitnessAgeRows(week(), measured, computedId, satKey)
+        assertEquals(47.5, vo2(rows)!!, 0.0)
+        assertEquals(
+            47.5,
+            vo2(IntelligenceEngine.fitnessAgeRows(week(), profile(0.0).copy(vo2maxOverride = 47.5),
+                                                  computedId, satKey))!!,
+            0.0,
+        )
+        assertEquals(
+            "measured",
+            IntelligenceEngine.vo2MaxProvenance(rows, waistCm = 92.0, computedId = computedId,
+                                                vo2maxOverride = 47.5).single().sourceId,
+        )
+    }
+
 }

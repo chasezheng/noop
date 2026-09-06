@@ -125,9 +125,17 @@ import com.noop.analytics.Baselines
 import com.noop.analytics.DayCycleMode
 import com.noop.analytics.HrZoneSet
 import com.noop.analytics.HrZones
+import com.noop.analytics.StrainScorer
 import com.noop.analytics.UserProfile
 import com.noop.analytics.Zones
 import com.noop.R
+import com.noop.analytics.calorie.DynamicHrrModelSetting
+import com.noop.analytics.calorie.DynamicHrrModelSettingRanges
+import com.noop.analytics.calorie.EnergyModel
+import com.noop.analytics.calorie.HeartRateGates
+import com.noop.analytics.calorie.HeartRateGatesRanges
+import com.noop.analytics.calorie.HybridModelSetting
+import com.noop.analytics.calorie.HybridModelSettingRanges
 import com.noop.ble.PuffinExperiment
 import com.noop.ble.WhoopBleClient
 // #174: the R22 card reads the flag COUNT off Whoop5Config.enableR22Sequence rather than restating it —
@@ -236,6 +244,16 @@ class ProfileStore(private val prefs: SharedPreferences) {
         get() = prefs.getFloat(KEY_WAIST, 0f).toDouble().coerceIn(0.0, WAIST_MAX)
         set(v) = prefs.edit().putFloat(KEY_WAIST, v.coerceIn(0.0, WAIST_MAX).toFloat()).apply()
 
+    /**
+     * Measured VO₂max in ml/kg/min; 0 derives it from the heart-rate ratio instead.
+     *
+     * Bounded above so a mistyped entry cannot run away, but with no floor: 0 must stay the sentinel
+     * for unset.
+     */
+    var vo2maxOverride: Double
+        get() = prefs.getFloat(KEY_VO2MAX, 0f).toDouble().coerceIn(0.0, VO2MAX_MAX)
+        set(v) = prefs.edit().putFloat(KEY_VO2MAX, v.coerceIn(0.0, VO2MAX_MAX).toFloat()).apply()
+
     /** Manual max-heart-rate override in bpm; 0 = automatic (Tanaka). */
     var hrMaxOverride: Int
         get() = prefs.getInt(KEY_HRMAX, 0).coerceIn(0, 230)
@@ -270,7 +288,407 @@ class ProfileStore(private val prefs: SharedPreferences) {
         sex = sex,
         stepTicksPerStep = stepTicksPerStep,
         waistCm = waistCm,
+        vo2maxOverride = vo2maxOverride,
+        heartRateGates = toHeartRateGates(),
+        hybridModelSetting = toHybridModelSetting(),
+        dynamicHrrModelSetting = toDynamicHrrModelSetting(),
+        hrZoneThresholds = hrZoneThresholds?.map(Int::toDouble),
+        calorieModel = calorieModel,
     )
+
+    // ── Calorie tracking ────────────────────────────────────────────────────────────────────────
+    // The wearer settings behind both daily energy models. Each getter clamps to its documented range
+    // and falls back to the engine default, so a corrupt or absent preference can only produce the
+    // shipped behaviour.
+
+    /** Which model produces the day's headline figure. Unrecognised values fall back to heart rate. */
+    var calorieModel: EnergyModel
+        get() = EnergyModel.forId(prefs.getString(KEY_CAL_MODEL, null)) ?: EnergyModel.HEART_RATE
+        set(v) = prefs.edit().putString(KEY_CAL_MODEL, v.id).apply()
+
+
+    /**
+     * A Double setting, stored as its exact bit pattern.
+     *
+     * A float round-trip turns 0.10 into 0.10000000149011612, so a value the wearer never edited
+     * would stop equalling the engine default it was seeded from.
+     */
+    private fun calorieKnob(key: String, default: Double, min: Double, max: Double): Double =
+        Double.fromBits(prefs.getLong(key, default.toRawBits())).coerceIn(min, max)
+
+    private fun setCalorieKnob(key: String, value: Double, min: Double, max: Double) =
+        prefs.edit().putLong(key, value.coerceIn(min, max).toRawBits()).apply()
+
+    private fun calorieKnob(key: String, default: Double, range: ClosedFloatingPointRange<Double>): Double =
+        Double.fromBits(prefs.getLong(key, default.toRawBits())).coerceIn(range)
+
+    private fun setCalorieKnob(key: String, value: Double, range: ClosedFloatingPointRange<Double>) =
+        prefs.edit().putLong(key, value.coerceIn(range).toRawBits()).apply()
+
+    /** The reserve fraction at or above which a second of an ordinary day counts as effort. */
+    var calorieDayActiveHRRFraction: Double
+        get() = calorieKnob(KEY_CAL_DAY_HRR, GATE_DEFAULTS.dayActiveHRRFraction, HeartRateGatesRanges.HRR_MIN, HeartRateGatesRanges.HRR_MAX)
+        set(v) = setCalorieKnob(KEY_CAL_DAY_HRR, v, HeartRateGatesRanges.HRR_MIN, HeartRateGatesRanges.HRR_MAX)
+
+    /** The same fraction inside a workout. Not a detection threshold. */
+    var calorieBoutActiveHRRFraction: Double
+        get() = calorieKnob(KEY_CAL_BOUT_HRR, GATE_DEFAULTS.boutActiveHRRFraction, HeartRateGatesRanges.HRR_MIN, HeartRateGatesRanges.HRR_MAX)
+        set(v) = setCalorieKnob(KEY_CAL_BOUT_HRR, v, HeartRateGatesRanges.HRR_MIN, HeartRateGatesRanges.HRR_MAX)
+
+    /** The lowest MET that earns active energy. Below it a minute is worth nothing above basal. */
+    var calorieActiveAccrualMET: Double
+        get() = calorieKnob(KEY_CAL_ACCRUAL_MET, HYBRID_DEFAULTS.activeAccrualMET,
+            HybridModelSettingRanges.ACCRUAL_MET_MIN, HybridModelSettingRanges.ACCRUAL_MET_MAX)
+        set(v) = setCalorieKnob(KEY_CAL_ACCRUAL_MET, v, HybridModelSettingRanges.ACCRUAL_MET_MIN, HybridModelSettingRanges.ACCRUAL_MET_MAX)
+
+    /** MET per g of gravity-removed acceleration. Uncalibrated. */
+    var calorieDynAccelMETGainPerG: Double
+        get() = calorieKnob(KEY_CAL_MET_GAIN, HYBRID_DEFAULTS.dynAccelMETGainPerG,
+            HybridModelSettingRanges.MET_GAIN_MIN, HybridModelSettingRanges.MET_GAIN_MAX)
+        set(v) = setCalorieKnob(KEY_CAL_MET_GAIN, v, HybridModelSettingRanges.MET_GAIN_MIN, HybridModelSettingRanges.MET_GAIN_MAX)
+
+    /** Whether a minute with no motion at all falls back to heart rate. */
+    var calorieHrFallbackWhenNoMET: Boolean
+        get() = prefs.getBoolean(KEY_CAL_HR_FALLBACK, HYBRID_DEFAULTS.hrFallbackWhenNoMET)
+        set(v) = prefs.edit().putBoolean(KEY_CAL_HR_FALLBACK, v).apply()
+
+    // ── Measured-basal model ────────────────────────────────────────────────────────────────────
+    // One property per field of [DynamicHrrModelSetting], in its declared order. Each clamps to the
+    // range that type publishes; what the field means is stated there rather than repeated here.
+
+    /** A whole-number setting, clamped to the range the model accepts. */
+    private fun calorieCount(key: String, default: Int, range: IntRange): Int =
+        prefs.getInt(key, default).coerceIn(range)
+
+    private fun setCalorieCount(key: String, value: Int, range: IntRange) =
+        prefs.edit().putInt(key, value.coerceIn(range)).apply()
+
+    var calorieDhrrSessionGapS: Int
+        get() = calorieCount(
+            KEY_DHRR_SESSION_GAP_S,
+            DYNAMIC_HRR_DEFAULTS.sessionGapS,
+            DynamicHrrModelSettingRanges.SESSION_GAP_S,
+        )
+        set(v) = setCalorieCount(
+            KEY_DHRR_SESSION_GAP_S, v, DynamicHrrModelSettingRanges.SESSION_GAP_S,
+        )
+    var calorieDhrrMinHrCoverageFrac: Double
+        get() = calorieKnob(
+            KEY_DHRR_MIN_HR_COVERAGE_FRAC,
+            DYNAMIC_HRR_DEFAULTS.minHrCoverageFrac,
+            DynamicHrrModelSettingRanges.MIN_HR_COVERAGE_FRAC,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_MIN_HR_COVERAGE_FRAC, v, DynamicHrrModelSettingRanges.MIN_HR_COVERAGE_FRAC,
+        )
+    var calorieDhrrHampelRadiusS: Int
+        get() = calorieCount(
+            KEY_DHRR_HAMPEL_RADIUS_S,
+            DYNAMIC_HRR_DEFAULTS.hampelRadiusS,
+            DynamicHrrModelSettingRanges.HAMPEL_RADIUS_S,
+        )
+        set(v) = setCalorieCount(
+            KEY_DHRR_HAMPEL_RADIUS_S, v, DynamicHrrModelSettingRanges.HAMPEL_RADIUS_S,
+        )
+    var calorieDhrrHampelSigmas: Double
+        get() = calorieKnob(
+            KEY_DHRR_HAMPEL_SIGMAS,
+            DYNAMIC_HRR_DEFAULTS.hampelSigmas,
+            DynamicHrrModelSettingRanges.HAMPEL_SIGMAS,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_HAMPEL_SIGMAS, v, DynamicHrrModelSettingRanges.HAMPEL_SIGMAS,
+        )
+    var calorieDhrrSuppressPeaks: Boolean
+        get() = prefs.getBoolean(KEY_DHRR_SUPPRESS_PEAKS, DYNAMIC_HRR_DEFAULTS.suppressPeaks)
+        set(v) = prefs.edit().putBoolean(KEY_DHRR_SUPPRESS_PEAKS, v).apply()
+    var calorieDhrrPeakBlockS: Int
+        get() = calorieCount(
+            KEY_DHRR_PEAK_BLOCK_S,
+            DYNAMIC_HRR_DEFAULTS.peakBlockS,
+            DynamicHrrModelSettingRanges.PEAK_BLOCK_S,
+        )
+        set(v) = setCalorieCount(
+            KEY_DHRR_PEAK_BLOCK_S, v, DynamicHrrModelSettingRanges.PEAK_BLOCK_S,
+        )
+    var calorieDhrrPeakPercentile: Double
+        get() = calorieKnob(
+            KEY_DHRR_PEAK_PERCENTILE,
+            DYNAMIC_HRR_DEFAULTS.peakPercentile,
+            DynamicHrrModelSettingRanges.PEAK_PERCENTILE,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_PEAK_PERCENTILE, v, DynamicHrrModelSettingRanges.PEAK_PERCENTILE,
+        )
+    var calorieDhrrMotionStillG: Double
+        get() = calorieKnob(
+            KEY_DHRR_MOTION_STILL_G,
+            DYNAMIC_HRR_DEFAULTS.motionStillG,
+            DynamicHrrModelSettingRanges.MOTION_STILL_G,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_MOTION_STILL_G, v, DynamicHrrModelSettingRanges.MOTION_STILL_G,
+        )
+    var calorieDhrrMotionSmoothS: Int
+        get() = calorieCount(
+            KEY_DHRR_MOTION_SMOOTH_S,
+            DYNAMIC_HRR_DEFAULTS.motionSmoothS,
+            DynamicHrrModelSettingRanges.MOTION_SMOOTH_S,
+        )
+        set(v) = setCalorieCount(
+            KEY_DHRR_MOTION_SMOOTH_S, v, DynamicHrrModelSettingRanges.MOTION_SMOOTH_S,
+        )
+    var calorieDhrrBasalMinWindowS: Int
+        get() = calorieCount(
+            KEY_DHRR_BASAL_MIN_WINDOW_S,
+            DYNAMIC_HRR_DEFAULTS.basalMinWindowS,
+            DynamicHrrModelSettingRanges.BASAL_MIN_WINDOW_S,
+        )
+        set(v) = setCalorieCount(
+            KEY_DHRR_BASAL_MIN_WINDOW_S, v, DynamicHrrModelSettingRanges.BASAL_MIN_WINDOW_S,
+        )
+    var calorieDhrrBasalHrRangeBpm: Double
+        get() = calorieKnob(
+            KEY_DHRR_BASAL_HR_RANGE_BPM,
+            DYNAMIC_HRR_DEFAULTS.basalHrRangeBpm,
+            DynamicHrrModelSettingRanges.BASAL_HR_RANGE_BPM,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_BASAL_HR_RANGE_BPM, v, DynamicHrrModelSettingRanges.BASAL_HR_RANGE_BPM,
+        )
+    var calorieDhrrBasalStillFrac: Double
+        get() = calorieKnob(
+            KEY_DHRR_BASAL_STILL_FRAC,
+            DYNAMIC_HRR_DEFAULTS.basalStillFrac,
+            DynamicHrrModelSettingRanges.BASAL_STILL_FRAC,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_BASAL_STILL_FRAC, v, DynamicHrrModelSettingRanges.BASAL_STILL_FRAC,
+        )
+    var calorieDhrrBasalBeatCoverageFrac: Double
+        get() = calorieKnob(
+            KEY_DHRR_BASAL_BEAT_COVERAGE_FRAC,
+            DYNAMIC_HRR_DEFAULTS.basalBeatCoverageFrac,
+            DynamicHrrModelSettingRanges.BASAL_BEAT_COVERAGE_FRAC,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_BASAL_BEAT_COVERAGE_FRAC,
+            v,
+            DynamicHrrModelSettingRanges.BASAL_BEAT_COVERAGE_FRAC,
+        )
+    var calorieDhrrRestSmoothS: Int
+        get() = calorieCount(
+            KEY_DHRR_REST_SMOOTH_S,
+            DYNAMIC_HRR_DEFAULTS.restSmoothS,
+            DynamicHrrModelSettingRanges.REST_SMOOTH_S,
+        )
+        set(v) = setCalorieCount(
+            KEY_DHRR_REST_SMOOTH_S, v, DynamicHrrModelSettingRanges.REST_SMOOTH_S,
+        )
+    var calorieDhrrRestSmoothMinSamples: Int
+        get() = calorieCount(
+            KEY_DHRR_REST_SMOOTH_MIN_SAMPLES,
+            DYNAMIC_HRR_DEFAULTS.restSmoothMinSamples,
+            DynamicHrrModelSettingRanges.REST_SMOOTH_MIN_SAMPLES,
+        )
+        set(v) = setCalorieCount(
+            KEY_DHRR_REST_SMOOTH_MIN_SAMPLES,
+            v,
+            DynamicHrrModelSettingRanges.REST_SMOOTH_MIN_SAMPLES,
+        )
+    var calorieDhrrBasalHrSeedOffsetBpm: Double
+        get() = calorieKnob(
+            KEY_DHRR_BASAL_HR_SEED_OFFSET_BPM,
+            DYNAMIC_HRR_DEFAULTS.basalHrSeedOffsetBpm,
+            DynamicHrrModelSettingRanges.BASAL_HR_SEED_OFFSET_BPM,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_BASAL_HR_SEED_OFFSET_BPM,
+            v,
+            DynamicHrrModelSettingRanges.BASAL_HR_SEED_OFFSET_BPM,
+        )
+    var calorieDhrrReserveRampBandBpm: Double
+        get() = calorieKnob(
+            KEY_DHRR_RESERVE_RAMP_BAND_BPM,
+            DYNAMIC_HRR_DEFAULTS.reserveRampBandBpm,
+            DynamicHrrModelSettingRanges.RESERVE_RAMP_BAND_BPM,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_RESERVE_RAMP_BAND_BPM,
+            v,
+            DynamicHrrModelSettingRanges.RESERVE_RAMP_BAND_BPM,
+        )
+    var calorieDhrrMeasuredBasalKcalDay: Double
+        get() = calorieKnob(
+            KEY_DHRR_MEASURED_BASAL_KCAL_DAY,
+            DYNAMIC_HRR_DEFAULTS.measuredBasalKcalDay,
+            DynamicHrrModelSettingRanges.MEASURED_BASAL_KCAL_DAY,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_MEASURED_BASAL_KCAL_DAY,
+            v,
+            DynamicHrrModelSettingRanges.MEASURED_BASAL_KCAL_DAY,
+        )
+    var calorieDhrrBasalFatNight: Double
+        get() = calorieKnob(
+            KEY_DHRR_BASAL_FAT_NIGHT,
+            DYNAMIC_HRR_DEFAULTS.basalFatNight,
+            DynamicHrrModelSettingRanges.BASAL_FAT_NIGHT,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_BASAL_FAT_NIGHT, v, DynamicHrrModelSettingRanges.BASAL_FAT_NIGHT,
+        )
+    var calorieDhrrBasalFatDay: Double
+        get() = calorieKnob(
+            KEY_DHRR_BASAL_FAT_DAY,
+            DYNAMIC_HRR_DEFAULTS.basalFatDay,
+            DynamicHrrModelSettingRanges.BASAL_FAT_DAY,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_BASAL_FAT_DAY, v, DynamicHrrModelSettingRanges.BASAL_FAT_DAY,
+        )
+    var calorieDhrrBasalFatDayStartHour: Double
+        get() = calorieKnob(
+            KEY_DHRR_BASAL_FAT_DAY_START_HOUR,
+            DYNAMIC_HRR_DEFAULTS.basalFatDayStartHour,
+            DynamicHrrModelSettingRanges.BASAL_FAT_DAY_START_HOUR,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_BASAL_FAT_DAY_START_HOUR,
+            v,
+            DynamicHrrModelSettingRanges.BASAL_FAT_DAY_START_HOUR,
+        )
+    var calorieDhrrBasalFatDayEndHour: Double
+        get() = calorieKnob(
+            KEY_DHRR_BASAL_FAT_DAY_END_HOUR,
+            DYNAMIC_HRR_DEFAULTS.basalFatDayEndHour,
+            DynamicHrrModelSettingRanges.BASAL_FAT_DAY_END_HOUR,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_BASAL_FAT_DAY_END_HOUR, v, DynamicHrrModelSettingRanges.BASAL_FAT_DAY_END_HOUR,
+        )
+    var calorieDhrrActiveFatAtZone1: Double
+        get() = calorieKnob(
+            KEY_DHRR_ACTIVE_FAT_AT_ZONE1,
+            DYNAMIC_HRR_DEFAULTS.activeFatAtZone1,
+            DynamicHrrModelSettingRanges.ACTIVE_FAT_AT_ZONE1,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_ACTIVE_FAT_AT_ZONE1, v, DynamicHrrModelSettingRanges.ACTIVE_FAT_AT_ZONE1,
+        )
+    var calorieDhrrActiveFatAtZone2Top: Double
+        get() = calorieKnob(
+            KEY_DHRR_ACTIVE_FAT_AT_ZONE2_TOP,
+            DYNAMIC_HRR_DEFAULTS.activeFatAtZone2Top,
+            DynamicHrrModelSettingRanges.ACTIVE_FAT_AT_ZONE2_TOP,
+        )
+        set(v) = setCalorieKnob(
+            KEY_DHRR_ACTIVE_FAT_AT_ZONE2_TOP,
+            v,
+            DynamicHrrModelSettingRanges.ACTIVE_FAT_AT_ZONE2_TOP,
+        )
+
+    /**
+     * Show NOOP's own calorie estimate even on days a phone also reports one.
+     *
+     * A phone value above zero otherwise wins, however small, which hides everything the models above
+     * compute. Display only: it changes which number is shown and never which is stored, so turning
+     * it off restores the previous reading exactly.
+     */
+    var caloriePreferOnDevice: Boolean
+        get() = prefs.getBoolean(KEY_CAL_PREFER_ON_DEVICE, false)
+        set(v) = prefs.edit().putBoolean(KEY_CAL_PREFER_ON_DEVICE, v).apply()
+
+    /**
+     * The stored gates as one [HeartRateGates].
+     *
+     * The only place the mapping lives: a caller that built the value longhand and omitted a field
+     * would silently revert that setting to its default.
+     */
+    fun toHeartRateGates(): HeartRateGates = HeartRateGates(
+        dayActiveHRRFraction = calorieDayActiveHRRFraction,
+        boutActiveHRRFraction = calorieBoutActiveHRRFraction,
+    )
+
+    /** The stored motion-hybrid settings as one [HybridModelSetting]. */
+    fun toHybridModelSetting(): HybridModelSetting = HybridModelSetting(
+        activeAccrualMET = calorieActiveAccrualMET,
+        dynAccelMETGainPerG = calorieDynAccelMETGainPerG,
+        hrFallbackWhenNoMET = calorieHrFallbackWhenNoMET,
+    )
+
+    /** The stored measured-basal settings as one [DynamicHrrModelSetting]. */
+    fun toDynamicHrrModelSetting(): DynamicHrrModelSetting = DynamicHrrModelSetting(
+        sessionGapS = calorieDhrrSessionGapS,
+        minHrCoverageFrac = calorieDhrrMinHrCoverageFrac,
+        hampelRadiusS = calorieDhrrHampelRadiusS,
+        hampelSigmas = calorieDhrrHampelSigmas,
+        suppressPeaks = calorieDhrrSuppressPeaks,
+        peakBlockS = calorieDhrrPeakBlockS,
+        peakPercentile = calorieDhrrPeakPercentile,
+        motionStillG = calorieDhrrMotionStillG,
+        motionSmoothS = calorieDhrrMotionSmoothS,
+        basalMinWindowS = calorieDhrrBasalMinWindowS,
+        basalHrRangeBpm = calorieDhrrBasalHrRangeBpm,
+        basalStillFrac = calorieDhrrBasalStillFrac,
+        basalBeatCoverageFrac = calorieDhrrBasalBeatCoverageFrac,
+        restSmoothS = calorieDhrrRestSmoothS,
+        restSmoothMinSamples = calorieDhrrRestSmoothMinSamples,
+        basalHrSeedOffsetBpm = calorieDhrrBasalHrSeedOffsetBpm,
+        reserveRampBandBpm = calorieDhrrReserveRampBandBpm,
+        measuredBasalKcalDay = calorieDhrrMeasuredBasalKcalDay,
+        basalFatNight = calorieDhrrBasalFatNight,
+        basalFatDay = calorieDhrrBasalFatDay,
+        basalFatDayStartHour = calorieDhrrBasalFatDayStartHour,
+        basalFatDayEndHour = calorieDhrrBasalFatDayEndHour,
+        activeFatAtZone1 = calorieDhrrActiveFatAtZone1,
+        activeFatAtZone2Top = calorieDhrrActiveFatAtZone2Top,
+    )
+
+    /**
+     * Restore every control on the Calorie tracking panel to its default.
+     *
+     * Wider than the two settings types: the panel also carries the model choice and
+     * [caloriePreferOnDevice], and a wearer expects every control they can see to move.
+     */
+    fun resetCalorieSettings() {
+        // Removed rather than assigned the defaults: every getter falls back when its key is absent,
+        // and [backupSnapshot] exports on key presence, so writing here would mark each value as
+        // deliberately chosen and let a backup stamp it over another device's settings.
+        prefs.edit()
+            .remove(KEY_CAL_MODEL)
+            .remove(KEY_CAL_DAY_HRR)
+            .remove(KEY_CAL_BOUT_HRR)
+            .remove(KEY_CAL_ACCRUAL_MET)
+            .remove(KEY_CAL_MET_GAIN)
+            .remove(KEY_CAL_HR_FALLBACK)
+            .remove(KEY_CAL_PREFER_ON_DEVICE)
+            .remove(KEY_DHRR_SESSION_GAP_S)
+            .remove(KEY_DHRR_MIN_HR_COVERAGE_FRAC)
+            .remove(KEY_DHRR_HAMPEL_RADIUS_S)
+            .remove(KEY_DHRR_HAMPEL_SIGMAS)
+            .remove(KEY_DHRR_SUPPRESS_PEAKS)
+            .remove(KEY_DHRR_PEAK_BLOCK_S)
+            .remove(KEY_DHRR_PEAK_PERCENTILE)
+            .remove(KEY_DHRR_MOTION_STILL_G)
+            .remove(KEY_DHRR_MOTION_SMOOTH_S)
+            .remove(KEY_DHRR_BASAL_MIN_WINDOW_S)
+            .remove(KEY_DHRR_BASAL_HR_RANGE_BPM)
+            .remove(KEY_DHRR_BASAL_STILL_FRAC)
+            .remove(KEY_DHRR_BASAL_BEAT_COVERAGE_FRAC)
+            .remove(KEY_DHRR_REST_SMOOTH_S)
+            .remove(KEY_DHRR_REST_SMOOTH_MIN_SAMPLES)
+            .remove(KEY_DHRR_BASAL_HR_SEED_OFFSET_BPM)
+            .remove(KEY_DHRR_RESERVE_RAMP_BAND_BPM)
+            .remove(KEY_DHRR_MEASURED_BASAL_KCAL_DAY)
+            .remove(KEY_DHRR_BASAL_FAT_NIGHT)
+            .remove(KEY_DHRR_BASAL_FAT_DAY)
+            .remove(KEY_DHRR_BASAL_FAT_DAY_START_HOUR)
+            .remove(KEY_DHRR_BASAL_FAT_DAY_END_HOUR)
+            .remove(KEY_DHRR_ACTIVE_FAT_AT_ZONE1)
+            .remove(KEY_DHRR_ACTIVE_FAT_AT_ZONE2_TOP)
+            .apply()
+    }
 
     // ── Steps ESTIMATE calibration (WHOOP 4.0; StepsEstimateEngine) ─────────────────────────────
     // Mirror of the macOS ProfileStore fields: the engine writes the auto-fit each analytics pass and
@@ -324,6 +742,17 @@ class ProfileStore(private val prefs: SharedPreferences) {
 
     /** Effective HR-max: the manual override if set, else the Tanaka estimate. */
     val hrMax: Int get() = if (hrMaxOverride > 0) hrMaxOverride else hrMaxAuto
+
+    /**
+     * The maximum heart rate the energy estimators use: the override when set, otherwise the
+     * unrounded Tanaka estimate.
+     *
+     * [hrMax] rounds for display and zone edges, which would put a printed gate a beat or two off the
+     * one the engine applies.
+     */
+    val hrMaxExact: Double
+        get() = hrMaxOverride.takeIf { it > 0 }?.toDouble()
+            ?: StrainScorer.tanakaHRmax(age.toDouble())
 
     /**
      * Five personalized inclusive zone starts in BPM, or null for the conventional %HRmax zones.
@@ -388,6 +817,47 @@ class ProfileStore(private val prefs: SharedPreferences) {
         if (prefs.contains(KEY_HR_ZONE_THRESHOLDS)) {
             hrZoneThresholds?.let { out["profile.hrZoneThresholds"] = it.joinToString(",") }
         }
+        if (prefs.contains(KEY_VO2MAX)) out["profile.vo2max"] = vo2maxOverride
+        // Exported only where the wearer moved the value, so a restore onto a device with its own
+        // settings overwrites nothing chosen there. Booleans go out as 0 and 1: the wire has no
+        // boolean kind.
+        if (prefs.contains(KEY_CAL_MODEL)) {
+            out["calorie.model"] = calorieModel.id
+        }
+        if (prefs.contains(KEY_CAL_PREFER_ON_DEVICE)) {
+            out["calorie.preferOnDevice"] = if (caloriePreferOnDevice) 1 else 0
+        }
+        if (prefs.contains(KEY_CAL_DAY_HRR)) out["calorie.dayActiveHRRFraction"] = calorieDayActiveHRRFraction
+        if (prefs.contains(KEY_CAL_BOUT_HRR)) out["calorie.boutActiveHRRFraction"] = calorieBoutActiveHRRFraction
+        if (prefs.contains(KEY_CAL_ACCRUAL_MET)) out["calorie.activeAccrualMET"] = calorieActiveAccrualMET
+        if (prefs.contains(KEY_CAL_MET_GAIN)) out["calorie.dynAccelMETGainPerG"] = calorieDynAccelMETGainPerG
+        if (prefs.contains(KEY_CAL_HR_FALLBACK)) {
+            out["calorie.hrFallbackWhenNoMET"] = if (calorieHrFallbackWhenNoMET) 1 else 0
+        }
+        if (prefs.contains(KEY_DHRR_SESSION_GAP_S)) out["calorie.sessionGapS"] = calorieDhrrSessionGapS
+        if (prefs.contains(KEY_DHRR_MIN_HR_COVERAGE_FRAC)) out["calorie.minHrCoverageFrac"] = calorieDhrrMinHrCoverageFrac
+        if (prefs.contains(KEY_DHRR_HAMPEL_RADIUS_S)) out["calorie.hampelRadiusS"] = calorieDhrrHampelRadiusS
+        if (prefs.contains(KEY_DHRR_HAMPEL_SIGMAS)) out["calorie.hampelSigmas"] = calorieDhrrHampelSigmas
+        if (prefs.contains(KEY_DHRR_SUPPRESS_PEAKS)) out["calorie.suppressPeaks"] = if (calorieDhrrSuppressPeaks) 1 else 0
+        if (prefs.contains(KEY_DHRR_PEAK_BLOCK_S)) out["calorie.peakBlockS"] = calorieDhrrPeakBlockS
+        if (prefs.contains(KEY_DHRR_PEAK_PERCENTILE)) out["calorie.peakPercentile"] = calorieDhrrPeakPercentile
+        if (prefs.contains(KEY_DHRR_MOTION_STILL_G)) out["calorie.motionStillG"] = calorieDhrrMotionStillG
+        if (prefs.contains(KEY_DHRR_MOTION_SMOOTH_S)) out["calorie.motionSmoothS"] = calorieDhrrMotionSmoothS
+        if (prefs.contains(KEY_DHRR_BASAL_MIN_WINDOW_S)) out["calorie.basalMinWindowS"] = calorieDhrrBasalMinWindowS
+        if (prefs.contains(KEY_DHRR_BASAL_HR_RANGE_BPM)) out["calorie.basalHrRangeBpm"] = calorieDhrrBasalHrRangeBpm
+        if (prefs.contains(KEY_DHRR_BASAL_STILL_FRAC)) out["calorie.basalStillFrac"] = calorieDhrrBasalStillFrac
+        if (prefs.contains(KEY_DHRR_BASAL_BEAT_COVERAGE_FRAC)) out["calorie.basalBeatCoverageFrac"] = calorieDhrrBasalBeatCoverageFrac
+        if (prefs.contains(KEY_DHRR_REST_SMOOTH_S)) out["calorie.restSmoothS"] = calorieDhrrRestSmoothS
+        if (prefs.contains(KEY_DHRR_REST_SMOOTH_MIN_SAMPLES)) out["calorie.restSmoothMinSamples"] = calorieDhrrRestSmoothMinSamples
+        if (prefs.contains(KEY_DHRR_BASAL_HR_SEED_OFFSET_BPM)) out["calorie.basalHrSeedOffsetBpm"] = calorieDhrrBasalHrSeedOffsetBpm
+        if (prefs.contains(KEY_DHRR_RESERVE_RAMP_BAND_BPM)) out["calorie.reserveRampBandBpm"] = calorieDhrrReserveRampBandBpm
+        if (prefs.contains(KEY_DHRR_MEASURED_BASAL_KCAL_DAY)) out["calorie.measuredBasalKcalDay"] = calorieDhrrMeasuredBasalKcalDay
+        if (prefs.contains(KEY_DHRR_BASAL_FAT_NIGHT)) out["calorie.basalFatNight"] = calorieDhrrBasalFatNight
+        if (prefs.contains(KEY_DHRR_BASAL_FAT_DAY)) out["calorie.basalFatDay"] = calorieDhrrBasalFatDay
+        if (prefs.contains(KEY_DHRR_BASAL_FAT_DAY_START_HOUR)) out["calorie.basalFatDayStartHour"] = calorieDhrrBasalFatDayStartHour
+        if (prefs.contains(KEY_DHRR_BASAL_FAT_DAY_END_HOUR)) out["calorie.basalFatDayEndHour"] = calorieDhrrBasalFatDayEndHour
+        if (prefs.contains(KEY_DHRR_ACTIVE_FAT_AT_ZONE1)) out["calorie.activeFatAtZone1"] = calorieDhrrActiveFatAtZone1
+        if (prefs.contains(KEY_DHRR_ACTIVE_FAT_AT_ZONE2_TOP)) out["calorie.activeFatAtZone2Top"] = calorieDhrrActiveFatAtZone2Top
         return out
     }
 
@@ -409,9 +879,54 @@ class ProfileStore(private val prefs: SharedPreferences) {
         (values["profile.hrZoneThresholds"] as? String)?.let {
             hrZoneThresholds = it.split(",").mapNotNull(String::toIntOrNull)
         }
+        (values["profile.vo2max"] as? Number)?.let { vo2maxOverride = it.toDouble() }
+        // Every write goes through a property setter, so a restored value is clamped to the range the
+        // engine accepts and a payload from a future build cannot push one past it.
+        (values["calorie.model"] as? String)?.let {
+            calorieModel = EnergyModel.forId(it) ?: EnergyModel.HEART_RATE
+        }
+        (values["calorie.preferOnDevice"] as? Number)?.let { caloriePreferOnDevice = it.toInt() != 0 }
+        (values["calorie.dayActiveHRRFraction"] as? Number)?.let { calorieDayActiveHRRFraction = it.toDouble() }
+        (values["calorie.boutActiveHRRFraction"] as? Number)?.let { calorieBoutActiveHRRFraction = it.toDouble() }
+        (values["calorie.activeAccrualMET"] as? Number)?.let { calorieActiveAccrualMET = it.toDouble() }
+        (values["calorie.dynAccelMETGainPerG"] as? Number)?.let { calorieDynAccelMETGainPerG = it.toDouble() }
+        (values["calorie.hrFallbackWhenNoMET"] as? Number)?.let { calorieHrFallbackWhenNoMET = it.toInt() != 0 }
+        (values["calorie.sessionGapS"] as? Number)?.let { calorieDhrrSessionGapS = it.toInt() }
+        (values["calorie.minHrCoverageFrac"] as? Number)?.let { calorieDhrrMinHrCoverageFrac = it.toDouble() }
+        (values["calorie.hampelRadiusS"] as? Number)?.let { calorieDhrrHampelRadiusS = it.toInt() }
+        (values["calorie.hampelSigmas"] as? Number)?.let { calorieDhrrHampelSigmas = it.toDouble() }
+        (values["calorie.suppressPeaks"] as? Number)?.let { calorieDhrrSuppressPeaks = it.toInt() != 0 }
+        (values["calorie.peakBlockS"] as? Number)?.let { calorieDhrrPeakBlockS = it.toInt() }
+        (values["calorie.peakPercentile"] as? Number)?.let { calorieDhrrPeakPercentile = it.toDouble() }
+        (values["calorie.motionStillG"] as? Number)?.let { calorieDhrrMotionStillG = it.toDouble() }
+        (values["calorie.motionSmoothS"] as? Number)?.let { calorieDhrrMotionSmoothS = it.toInt() }
+        (values["calorie.basalMinWindowS"] as? Number)?.let { calorieDhrrBasalMinWindowS = it.toInt() }
+        (values["calorie.basalHrRangeBpm"] as? Number)?.let { calorieDhrrBasalHrRangeBpm = it.toDouble() }
+        (values["calorie.basalStillFrac"] as? Number)?.let { calorieDhrrBasalStillFrac = it.toDouble() }
+        (values["calorie.basalBeatCoverageFrac"] as? Number)?.let { calorieDhrrBasalBeatCoverageFrac = it.toDouble() }
+        (values["calorie.restSmoothS"] as? Number)?.let { calorieDhrrRestSmoothS = it.toInt() }
+        (values["calorie.restSmoothMinSamples"] as? Number)?.let { calorieDhrrRestSmoothMinSamples = it.toInt() }
+        (values["calorie.basalHrSeedOffsetBpm"] as? Number)?.let { calorieDhrrBasalHrSeedOffsetBpm = it.toDouble() }
+        (values["calorie.reserveRampBandBpm"] as? Number)?.let { calorieDhrrReserveRampBandBpm = it.toDouble() }
+        (values["calorie.measuredBasalKcalDay"] as? Number)?.let { calorieDhrrMeasuredBasalKcalDay = it.toDouble() }
+        (values["calorie.basalFatNight"] as? Number)?.let { calorieDhrrBasalFatNight = it.toDouble() }
+        (values["calorie.basalFatDay"] as? Number)?.let { calorieDhrrBasalFatDay = it.toDouble() }
+        (values["calorie.basalFatDayStartHour"] as? Number)?.let { calorieDhrrBasalFatDayStartHour = it.toDouble() }
+        (values["calorie.basalFatDayEndHour"] as? Number)?.let { calorieDhrrBasalFatDayEndHour = it.toDouble() }
+        (values["calorie.activeFatAtZone1"] as? Number)?.let { calorieDhrrActiveFatAtZone1 = it.toDouble() }
+        (values["calorie.activeFatAtZone2Top"] as? Number)?.let { calorieDhrrActiveFatAtZone2Top = it.toDouble() }
     }
 
     companion object {
+
+        /** The shipped default of both heart-rate gates. */
+        val GATE_DEFAULTS = HeartRateGates()
+
+        /** The shipped default of every motion-hybrid setting. */
+        val HYBRID_DEFAULTS = HybridModelSetting()
+
+        /** The shipped default of every measured-basal setting. */
+        val DYNAMIC_HRR_DEFAULTS = DynamicHrrModelSetting()
         private const val PREFS = "noop_profile"
         /** Date of birth as epoch millis — the #146 source of truth for [age]. */
         private const val KEY_DOB = "date_of_birth"
@@ -422,6 +937,7 @@ class ProfileStore(private val prefs: SharedPreferences) {
         private const val KEY_WEIGHT = "weight_kg"
         private const val KEY_HEIGHT = "height_cm"
         private const val KEY_WAIST = "waist_cm"
+        private const val KEY_VO2MAX = "vo2max_override"
         private const val KEY_HRMAX = "hr_max_override"
         private const val KEY_HR_ZONE_THRESHOLDS = "hr_zone_thresholds"
 
@@ -438,6 +954,43 @@ class ProfileStore(private val prefs: SharedPreferences) {
         private const val KEY_STEPS_MANUAL_COEFF = "steps_manual_coefficient"
         private const val KEY_STEPS_HAS_MOTION = "steps_has_banked_motion"
 
+        // ── Calorie tracking (Settings → Calorie tracking) ─────────────────────────────────────
+        private const val KEY_CAL_MODEL = "calorie_model"
+        private const val KEY_CAL_DAY_HRR = "calorie_day_hrr_fraction"
+        private const val KEY_CAL_BOUT_HRR = "calorie_bout_hrr_fraction"
+        private const val KEY_CAL_ACCRUAL_MET = "calorie_active_accrual_met"
+        private const val KEY_CAL_MET_GAIN = "calorie_dyn_accel_met_gain"
+        private const val KEY_CAL_HR_FALLBACK = "calorie_hr_fallback_when_no_met"
+        private const val KEY_CAL_PREFER_ON_DEVICE = "calorie_prefer_on_device"
+
+        private const val KEY_DHRR_SESSION_GAP_S = "calorie_dhrr_session_gap_s"
+        private const val KEY_DHRR_MIN_HR_COVERAGE_FRAC = "calorie_dhrr_min_hr_coverage_frac"
+        private const val KEY_DHRR_HAMPEL_RADIUS_S = "calorie_dhrr_hampel_radius_s"
+        private const val KEY_DHRR_HAMPEL_SIGMAS = "calorie_dhrr_hampel_sigmas"
+        private const val KEY_DHRR_SUPPRESS_PEAKS = "calorie_dhrr_suppress_peaks"
+        private const val KEY_DHRR_PEAK_BLOCK_S = "calorie_dhrr_peak_block_s"
+        private const val KEY_DHRR_PEAK_PERCENTILE = "calorie_dhrr_peak_percentile"
+        private const val KEY_DHRR_MOTION_STILL_G = "calorie_dhrr_motion_still_g"
+        private const val KEY_DHRR_MOTION_SMOOTH_S = "calorie_dhrr_motion_smooth_s"
+        private const val KEY_DHRR_BASAL_MIN_WINDOW_S = "calorie_dhrr_basal_min_window_s"
+        private const val KEY_DHRR_BASAL_HR_RANGE_BPM = "calorie_dhrr_basal_hr_range_bpm"
+        private const val KEY_DHRR_BASAL_STILL_FRAC = "calorie_dhrr_basal_still_frac"
+        private const val KEY_DHRR_BASAL_BEAT_COVERAGE_FRAC = "calorie_dhrr_basal_beat_coverage_frac"
+        private const val KEY_DHRR_REST_SMOOTH_S = "calorie_dhrr_rest_smooth_s"
+        private const val KEY_DHRR_REST_SMOOTH_MIN_SAMPLES = "calorie_dhrr_rest_smooth_min_samples"
+        private const val KEY_DHRR_BASAL_HR_SEED_OFFSET_BPM = "calorie_dhrr_basal_hr_seed_offset_bpm"
+        private const val KEY_DHRR_RESERVE_RAMP_BAND_BPM = "calorie_dhrr_reserve_ramp_band_bpm"
+        private const val KEY_DHRR_MEASURED_BASAL_KCAL_DAY = "calorie_dhrr_measured_basal_kcal_day"
+        private const val KEY_DHRR_BASAL_FAT_NIGHT = "calorie_dhrr_basal_fat_night"
+        private const val KEY_DHRR_BASAL_FAT_DAY = "calorie_dhrr_basal_fat_day"
+        private const val KEY_DHRR_BASAL_FAT_DAY_START_HOUR = "calorie_dhrr_basal_fat_day_start_hour"
+        private const val KEY_DHRR_BASAL_FAT_DAY_END_HOUR = "calorie_dhrr_basal_fat_day_end_hour"
+        private const val KEY_DHRR_ACTIVE_FAT_AT_ZONE1 = "calorie_dhrr_active_fat_at_zone1"
+        private const val KEY_DHRR_ACTIVE_FAT_AT_ZONE2_TOP = "calorie_dhrr_active_fat_at_zone2_top"
+
+        // The ranges live on the analytics types that own these values, so the getters above clamp to
+        // exactly what the engines accept.
+
         private const val AGE_MIN = 13
         private const val AGE_MAX = 100
         private const val WEIGHT_MIN = 30.0
@@ -445,6 +998,15 @@ class ProfileStore(private val prefs: SharedPreferences) {
         private const val HEIGHT_MIN = 120.0
         private const val HEIGHT_MAX = 230.0
         private const val WAIST_MAX = 200.0
+
+        /** Above the highest VO₂max ever recorded, so a mistyped entry is bounded. */
+        internal const val VO2MAX_MAX = 90.0
+
+        /** One step of the VO₂max stepper, in ml/kg/min. */
+        internal const val VO2MAX_STEP = 1.0
+
+        /** What the first tap from unset seeds, rather than stepping up from 0. */
+        internal const val VO2MAX_SEED = 40.0
         private const val STEP_SCALE_MIN = 0.5
         private const val STEP_SCALE_MAX = 30.0
 
@@ -506,6 +1068,7 @@ fun SettingsScreen(
     onOpenBackupSync: () -> Unit = {},
     onOpenSelfHostedPush: () -> Unit = {},
     onOpenStepsCalibration: () -> Unit = {},
+    onOpenCalorieTracking: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1078,6 +1641,45 @@ fun SettingsScreen(
                     color = if (hasWaist) Palette.accent else Palette.textTertiary,
                 )
                 SettingsRowDivider()
+                // Optional: a measured value replaces the heart-rate-ratio inference. Unset shows
+                // "Add", and stepping down from the seed returns to unset.
+                val hasVo2max = profile.vo2maxOverride > 0.0
+                SettingsFormRow(label = uiString(R.string.settings_vo2max_label)) {
+                    StepperField(
+                        value = if (hasVo2max) "%.0f".format(profile.vo2maxOverride) else "Add",
+                        unit = if (hasVo2max) "ml/kg/min" else null,
+                        accessibility = if (hasVo2max) {
+                            uiString(R.string.settings_vo2max_a11y_set)
+                        } else {
+                            uiString(R.string.settings_vo2max_a11y_unset)
+                        },
+                        valueColor = if (hasVo2max) Palette.textPrimary else Palette.textTertiary,
+                        onMinus = {
+                            mutate {
+                                profile.vo2maxOverride = vo2maxStep(
+                                    profile.vo2maxOverride, up = false,
+                                    seed = ProfileStore.VO2MAX_SEED, step = ProfileStore.VO2MAX_STEP,
+                                    max = ProfileStore.VO2MAX_MAX,
+                                )
+                            }
+                        },
+                        onPlus = {
+                            mutate {
+                                profile.vo2maxOverride = vo2maxStep(
+                                    profile.vo2maxOverride, up = true,
+                                    seed = ProfileStore.VO2MAX_SEED, step = ProfileStore.VO2MAX_STEP,
+                                    max = ProfileStore.VO2MAX_MAX,
+                                )
+                            }
+                        },
+                    )
+                }
+                Text(
+                    uiString(R.string.settings_vo2max_footnote),
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                )
+                SettingsRowDivider()
                 SettingsFormRow(label = uiString(R.string.l10n_settings_screen_max_heart_rate_3d4ed858)) {
                     Column(horizontalAlignment = Alignment.End) {
                         StepperField(
@@ -1204,6 +1806,55 @@ fun SettingsScreen(
                 }
                 Text(
                     uiString(R.string.l10n_settings_screen_for_a_whoop_4_0_which_df865854),
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                )
+                SettingsRowDivider()
+                // In Profile because every setting behind it is scored against this card's weight,
+                // height, age and sex.
+                val calorieModel = profile.calorieModel
+                val calorieSummary = uiString(
+                    when (calorieModel) {
+                        EnergyModel.HYBRID -> R.string.calorie_tracking_hybrid_overline
+                        EnergyModel.HEART_RATE -> R.string.calorie_tracking_hr_overline
+                        EnergyModel.DYNAMIC_HRR -> R.string.calorie_tracking_dynamic_hrr_overline
+                    },
+                )
+                val calorieRowTitle = uiString(R.string.calorie_tracking_open_row)
+                val calorieRowInteraction = remember { MutableInteractionSource() }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 44.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .liquidPress(calorieRowInteraction)
+                        .clickable(
+                            interactionSource = calorieRowInteraction,
+                            indication = null,
+                        ) { onOpenCalorieTracking() }
+                        .semantics {
+                            contentDescription = uiString(R.string.calorie_tracking_knob_a11y, calorieRowTitle, calorieSummary)
+                        }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Text(calorieRowTitle, style = NoopType.body, color = Palette.textPrimary, modifier = Modifier.weight(1f))
+                    Text(
+                        calorieSummary,
+                        style = NoopType.footnote,
+                        // The default reads as chrome; anything the wearer opted into reads as chosen.
+                        color = if (calorieModel == EnergyModel.HEART_RATE) Palette.textTertiary else Palette.accent,
+                    )
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = Palette.textTertiary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                Text(
+                    uiString(R.string.calorie_tracking_open_detail),
                     style = NoopType.footnote,
                     color = Palette.textTertiary,
                 )

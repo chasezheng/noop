@@ -16,6 +16,17 @@ internal fun waistCmStep(current: Double, up: Boolean): Double {
     return (current + if (up) 1.0 else -1.0).coerceAtLeast(WAIST_SEED_CM - 30.0)
 }
 
+/**
+ * Step a measured VO₂max by one ml/kg/min, seeding a typical adult value from unset.
+ *
+ * Stepping down from the seed returns to unset, so a value entered by mistake can be withdrawn.
+ */
+internal fun vo2maxStep(current: Double, up: Boolean, seed: Double, step: Double, max: Double): Double {
+    if (current <= 0.0) return if (up) seed else 0.0
+    val next = current + if (up) step else -step
+    return if (next < seed - 20.0) 0.0 else next.coerceAtMost(max)
+}
+
 /** Step the waist by one inch (entry unit in imperial; stored as cm), seeding [WAIST_SEED_CM] from
  *  unset. Snaps to whole inches so the up/down sequence is symmetric, mirroring the Height field. */
 internal fun waistInchesStep(current: Double, up: Boolean): Double {

@@ -77,6 +77,7 @@ import com.noop.ble.SourceCoordinator
 import com.noop.analytics.AgreementState
 import com.noop.analytics.MetricArbitrationPolicy
 import com.noop.analytics.StrapComparison
+import com.noop.analytics.calorie.Calories
 import com.noop.data.DailyMetric
 import com.noop.data.WhoopRepository
 import androidx.compose.runtime.LaunchedEffect

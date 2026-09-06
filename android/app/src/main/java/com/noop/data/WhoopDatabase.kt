@@ -54,7 +54,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AppleStepHour::class,
         CoachMessageRow::class,
     ],
-    version = 39,
+    version = 41,
     // #775: ON so Room's KSP processor writes the generated schema (every table's exact `CREATE TABLE`,
     // columns in declaration order with affinity/NOT NULL/default, PK and indices) as JSON. That export
     // is what lets a plain JVM test — no device, no Robolectric — read Android's REAL schema and compare
@@ -74,7 +74,7 @@ abstract class WhoopDatabase : RoomDatabase() {
         const val DB_NAME = "noop_whoop.db"
         /** Room schema version — MUST equal the `@Database(version = …)` above. Surfaced in the backup
          *  manifest (#1410) so an export states its schema. Bump both together on a migration. */
-        const val SCHEMA_VERSION = 39
+        const val SCHEMA_VERSION = 41
 
         @Volatile
         private var instance: WhoopDatabase? = null
@@ -955,24 +955,59 @@ abstract class WhoopDatabase : RoomDatabase() {
         }
 
         /**
-         * #2019: carry the v26 optical window's ABSOLUTE base code beside its deltas.
+         * v36 -> v37: re-home the Health Connect daily rows off the strap's own source id.
          *
-         * The 25-sample window is one absolute ADC code plus 24 deltas, and only the deltas were read,
-         * so the stored `samples` blob is a derivative and the DC level was thrown away. Nullable and
-         * additive: an existing row keeps its deltas and gets a null base, which is the true statement
-         * about it. A delta series cannot be inverted without the base, so those windows have no
-         * recoverable absolute level and no backfill can invent one.
+         * Left under the strap id those rows are indistinguishable from strap data, so the read-side
+         * arbitration would rank a phone aggregate as the strap's own measurement. This must land
+         * before the purge stops matching rows that carry vitals, which would otherwise make them
+         * permanent.
+         *
+         * Rows are identified by the same shape fingerprint the purge uses, so a strap-scored day,
+         * which always carries stages and efficiency, is never moved. `UPDATE OR IGNORE` because
+         * `(deviceId, day)` is the primary key: a day that already has a Health Connect row keeps it.
+         *
+         * Android-only: no other platform ever wrote these rows under the strap source.
          */
-        internal val MIGRATION_37_38 = object : Migration(37, 38) {
+        internal val HEALTH_CONNECT_DAILY_REHOME_MIGRATION_SQL: List<String> = listOf(
+            "UPDATE OR IGNORE `dailyMetric` SET `deviceId` = 'health-connect' " +
+                "WHERE `deviceId` = 'my-whoop' " +
+                "AND `efficiency` IS NULL AND `deepMin` IS NULL AND `remMin` IS NULL AND `lightMin` IS NULL " +
+                "AND `disturbances` IS NULL AND `recovery` IS NULL AND `strain` IS NULL " +
+                "AND `steps` IS NULL AND `activeKcalEst` IS NULL",
+        )
+
+        internal val MIGRATION_36_37 = object : Migration(36, 37) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE `ppgWaveformSample` ADD COLUMN `baseCode` INTEGER")
+                for (stmt in HEALTH_CONNECT_DAILY_REHOME_MIGRATION_SQL) db.execSQL(stmt)
             }
         }
 
-        /** PRD-K2: persisted Coach conversation history (schema v37). Swift twin: WhoopStore
+        /**
+         * v37 -> v38: drop `rawImuSample` again, for the installs that never ran [MIGRATION_34_35].
+         *
+         * That table is retired and no entity maps it, so Room neither reads it nor notices it is
+         * there: it survives as dead bytes rather than as a schema fault. An install that upgraded
+         * through 34 -> 35 dropped it already and finds nothing to do here.
+         *
+         * The installs that did not are the ones that ran a build of this branch before it was
+         * rebased, when 34 -> 35 was a different migration on this branch than upstream's. Their
+         * databases passed version 35 without the drop, so no later step can reach it. `IF EXISTS`
+         * because the table is absent for everyone else.
+         */
+        internal val RAW_IMU_DROP_MIGRATION_SQL: List<String> = listOf(
+            "DROP TABLE IF EXISTS `rawImuSample`",
+        )
+
+        internal val MIGRATION_37_38 = object : Migration(37, 38) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in RAW_IMU_DROP_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /** PRD-K2: persisted Coach conversation history (schema v39). Swift twin: WhoopStore
          *  Database.swift `v43-coach-messages` migration. Column order matches [CoachMessageRow]
          *  field declaration order so Room's generated `CREATE TABLE` shape agrees. */
-        internal val MIGRATION_36_37 = object : Migration(36, 37) {
+        internal val MIGRATION_38_39 = object : Migration(38, 39) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     """CREATE TABLE IF NOT EXISTS `coachMessage` (
@@ -988,11 +1023,26 @@ abstract class WhoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * #2019: carry the v26 optical window's ABSOLUTE base code beside its deltas.
+         *
+         * The 25-sample window is one absolute ADC code plus 24 deltas, and only the deltas were read,
+         * so the stored `samples` blob is a derivative and the DC level was thrown away. Nullable and
+         * additive: an existing row keeps its deltas and gets a null base, which is the true statement
+         * about it. A delta series cannot be inverted without the base, so those windows have no
+         * recoverable absolute level and no backfill can invent one.
+         */
+        internal val MIGRATION_39_40 = object : Migration(39, 40) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `ppgWaveformSample` ADD COLUMN `baseCode` INTEGER")
+            }
+        }
+
         /** Covers the source-promotion cache witnesses. Twin of GRDB v45-rr-source-index. */
         internal const val RR_SOURCE_INDEX_SQL =
             "CREATE INDEX IF NOT EXISTS rrInterval_source_suspect ON rrInterval(srcChannel, tsSuspect)"
 
-        internal val MIGRATION_38_39 = object : Migration(38, 39) {
+        internal val MIGRATION_40_41 = object : Migration(40, 41) {
             override fun migrate(db: SupportSQLiteDatabase) { db.execSQL(RR_SOURCE_INDEX_SQL) }
         }
 
@@ -1022,7 +1072,7 @@ abstract class WhoopDatabase : RoomDatabase() {
             MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26,
             MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30,
             MIGRATION_30_31, MIGRATION_31_32, MIGRATION_32_33, MIGRATION_33_34, MIGRATION_34_35, MIGRATION_35_36,
-            MIGRATION_36_37, MIGRATION_37_38, MIGRATION_38_39,
+            MIGRATION_36_37, MIGRATION_37_38, MIGRATION_38_39, MIGRATION_39_40, MIGRATION_40_41,
         )
 
         private fun build(appContext: Context): WhoopDatabase =

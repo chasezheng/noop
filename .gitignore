@@ -118,3 +118,7 @@ tools/linux-capture/*.db
 tools/linux-capture/*.db-wal
 tools/linux-capture/*.db-shm
 tools/linux-capture/captures/
+
+# Jupyter's auto-save backup of a notebook, written beside it on every save. It is a generated
+# duplicate of the working notebook — with outputs embedded, a copy runs to hundreds of megabytes.
+.ipynb_checkpoints/

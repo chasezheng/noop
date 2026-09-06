@@ -205,9 +205,12 @@ internal object PhysiologicalStepCycleEngine {
             StrainScorer.strain(cycleHr, effectiveMaxHr, restingHr, effortMethod, profile.sex)
                 ?.let { strainByWakeDay[wakeDay] = it }
             if (cycleHr.isNotEmpty()) {
-                caloriesByWakeDay[wakeDay] = Calories.estimateDayCalories(
+                // The ACTIVE term, because this lands in `activeKcalEst`, which holds the surplus
+                // above resting metabolism — the same quantity the calendar-day path stores and the
+                // same one Health Connect and Apple Health call active energy.
+                caloriesByWakeDay[wakeDay] = Calories.estimateDayEnergy(
                     cycleHr, profile, effectiveMaxHr, restingHr,
-                )
+                ).dayActiveKcal
             }
             // Count the persisted all-source workout union, not only analyzer-detected bouts. Repository
             // reads are inclusive, while ownership is [onset, nextOnset).

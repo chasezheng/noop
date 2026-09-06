@@ -28,9 +28,9 @@ final class DayCaloriesTests: XCTestCase {
     }
 
     func testDayCaloriesMatchesBoutAtOneHz() {
-        // At a steady 1 Hz stream the day and bout estimators agree exactly: the bout path's
-        // elapsed-time weighting caps every ~1 s interval at 1 s, so it collapses to the day
-        // path's flat one-second-per-sample. They diverge on gappy streams, but not here.
+        // At a steady 1 Hz the day and bout estimators agree exactly: every interval is 1 s under
+        // both caps, and the day path's split re-sums to the gross rate the bout path credits. They
+        // diverge on a gappy stream, which testDayGapCapsSurplusNotBasal covers.
         let profile = UserProfile(weightKg: 80, heightCm: 180, age: 35, sex: "male")
         let hr = hrDay(bpm: 130, n: 600)  // 10 min above the active threshold, dense 1 Hz
         let day = Calories.estimateDayCalories(hr, profile: profile, hrmax: 185.0, restingHR: 55.0)
@@ -58,7 +58,7 @@ final class DayCaloriesTests: XCTestCase {
         // A whole day at resting HR burns far less than the same length all-active day,
         // and the resting-day total is positive (BMR floor).
         let profile = UserProfile(weightKg: 70, heightCm: 170, age: 30, sex: "nonbinary")
-        // Day activeThreshold = 55 + 0.50*(185-55) = 120 bpm; 60 < 120 (resting), 150 >= 120 (active).
+        // Day activeThreshold = 55 + 0.10*(185-55) = 68 bpm; 60 < 68 (resting), 150 >= 68 (active).
         let restingDay = Calories.estimateDayCalories(hrDay(bpm: 60, n: 3600), profile: profile,
                                                       hrmax: 185.0, restingHR: 55.0)
         let activeDay = Calories.estimateDayCalories(hrDay(bpm: 150, n: 3600), profile: profile,
@@ -80,27 +80,56 @@ final class DayCaloriesTests: XCTestCase {
                        "a sedentary full day must total ≈ the subject's BMR (~1825 kcal)")
     }
 
-    func testLightActivityDayIsFarBelowOldInflatedTotal() {
-        // The bug: at the OLD 30% day gate (~94 bpm for this subject) ordinary low-intensity
-        // daytime HR (~100 bpm walking/standing) was credited the FULL Keytel gross-exercise
-        // rate, inflating the day total by ~1000+ kcal. The 50% day gate (120 bpm) now treats
-        // that HR as resting, so a realistic mixed light day (8 h sleep @55, 8 h sedentary @70,
-        // 8 h light activity @100) collapses toward BMR instead of the old runaway figure.
+    func testDayGateIsTenPercentHRRAndCreditsSubExerciseHR() {
+        // Pins the cost of the 10% day gate, so it cannot change in either direction silently.
+        //
+        // For a wearer with an ordinary resting HR the gate falls below their sedentary rate, and
+        // Keytel does not decay to basal there. This subject (resting 55) gets a 68 bpm gate, so a
+        // light day is credited about 5 177 kcal against a true expenditure nearer 2 500. That
+        // over-count is the accepted cost of a gate low enough to serve a fit wearer, which
+        // testLowRestingHRUserGetsCreditForOrdinaryActivity covers.
         let profile = UserProfile(weightKg: 80, heightCm: 180, age: 35, sex: "male")
-        let block = 8 * 3_600
-        let lightDay = hrDay(bpm: 55, n: block)
-            + hrDay(bpm: 70, n: block, start: block)
-            + hrDay(bpm: 100, n: block, start: 2 * block)
+        XCTAssertEqual(Calories.dayActiveHRRFraction, 0.10, accuracy: 1e-12)
+        // Gate = 55 + 0.10 × (185 − 55) = 68 bpm.
+        let below = Calories.estimateDayCalories(hrDay(bpm: 67, n: 3_600), profile: profile,
+                                                 hrmax: 185.0, restingHR: 55.0)
+        let above = Calories.estimateDayCalories(hrDay(bpm: 69, n: 3_600), profile: profile,
+                                                 hrmax: 185.0, restingHR: 55.0)
+        XCTAssertGreaterThan(above, below, "69 bpm is above the 68 bpm gate, 67 is below")
+        XCTAssertEqual(below, 1825.247 / 24.0, accuracy: 0.01, "sub-gate hour = basal only")
+
+        // The light day, with DISTINCT timestamps so the wall-clock span is a real 24 h.
+        var lightDay: [HRSample] = []
+        for i in 0..<(8 * 3_600) { lightDay.append(HRSample(ts: i, bpm: 55)) }
+        for i in 0..<(8 * 3_600) { lightDay.append(HRSample(ts: 8 * 3_600 + i, bpm: 70)) }
+        for i in 0..<(8 * 3_600) { lightDay.append(HRSample(ts: 16 * 3_600 + i, bpm: 100)) }
         let total = Calories.estimateDayCalories(lightDay, profile: profile,
                                                  hrmax: 185.0, restingHR: 55.0)
-        // NEW total ≈ 1825 kcal (every second below the 120 bpm gate → BMR floor).
-        XCTAssertEqual(total, 1825.25, accuracy: 1.0,
-                       "a light-activity day must land near BMR, not the old inflated total")
-        // Teeth: the OLD 30%-gate model credited the 8 h @100 bpm block at the full Keytel
-        // active rate (~3551 kcal for that block alone), so the old day total was ≈ 4768 kcal.
-        // Pin that we are now WELL below it (more than 2000 kcal lower).
-        XCTAssertLessThan(total, 4768.0 - 2000.0,
-                          "the light-activity day must drop far below the old inflated ~4768 kcal")
+        XCTAssertEqual(total, 5177.32, accuracy: 2.0,
+                       "the 10% gate credits sedentary + light HR the Keytel rate — known over-count")
+        XCTAssertGreaterThan(total, 1825.25,
+                             "the whole point of the low gate: a light day now exceeds bare BMR")
+    }
+
+    func testLowRestingHRUserGetsCreditForOrdinaryActivity() {
+        // The case the 10% gate exists for: resting 42 against a 180 maximum, a reserve of 138 bpm.
+        // The gate is 55.8 bpm, so walking at 65, easy cycling at 95 and a recovery jog at 115 are
+        // each credited above basal, in the right order of effort.
+        let profile = UserProfile(weightKg: 75, heightCm: 178, age: 35, sex: "male")
+        func hourAt(_ bpm: Int) -> Double {
+            Calories.estimateDayCalories(hrDay(bpm: bpm, n: 3_600), profile: profile,
+                                         hrmax: 180.0, restingHR: 42.0)
+        }
+        let sitting = hourAt(50)     // below the 55.8 bpm gate → basal only
+        let walking = hourAt(65)
+        let cycling = hourAt(95)
+        let zone2 = hourAt(130)
+        XCTAssertLessThan(sitting, walking, "walking must clear the gate; sitting must not")
+        XCTAssertLessThan(walking, cycling)
+        XCTAssertLessThan(cycling, zone2)
+        // Walking and cycling must be distinguishable from sitting.
+        XCTAssertGreaterThan(cycling, sitting * 2.0,
+                             "easy cycling must be worth clearly more than an hour of sitting")
     }
 
     func testSparseHRTracksElapsedTimeNotSampleCount() {
@@ -172,27 +201,71 @@ final class DayCaloriesTests: XCTestCase {
                        "an inter-sample gap must be capped at mergeGapS, not credited in full")
     }
 
-    func testDayPathCapsRestingAndActiveGap() {
-        // Two isolated high readings must not claim the whole hour as either resting or active
-        // energy. With the 60 s carry cap, both components cover exactly 120 supported seconds.
+    func testSparseDayTracksElapsedTimeNotSampleCount() {
+        // Basal accrues on the wall clock, so a fully-worn 24 h day totals the subject's basal rate
+        // at any sample cadence. Crediting one second per sample is correct only at exactly 1 Hz,
+        // and a strap streaming every 30 s would count 2 880 s of metabolism instead of 86 400.
         let profile = UserProfile(weightKg: 80, heightCm: 180, age: 35, sex: "male")
-        let gapped = [HRSample(ts: 0, bpm: 130), HRSample(ts: 3600, bpm: 130)]
-        let active120s = hrDay(bpm: 130, n: 120)
-        let active3660s = hrDay(bpm: 130, n: 3660)
-        let gapEnergy = Calories.estimateDayEnergy(gapped, profile: profile,
-                                                   hrmax: 185.0, restingHR: 55.0)
-        let shortEnergy = Calories.estimateDayEnergy(active120s, profile: profile,
-                                                     hrmax: 185.0, restingHR: 55.0)
-        let continuousEnergy = Calories.estimateDayEnergy(active3660s, profile: profile,
-                                                          hrmax: 185.0, restingHR: 55.0)
-        XCTAssertEqual(gapEnergy.observedSeconds, 120, accuracy: 1e-12)
-        XCTAssertEqual(gapEnergy.restingKcal, shortEnergy.restingKcal, accuracy: 1e-9,
-                       "a long gap must carry only 120 capped resting seconds")
-        XCTAssertEqual(gapEnergy.activeKcal, shortEnergy.activeKcal, accuracy: 1e-9,
-                       "a long gap must carry only 120 capped active seconds")
-        XCTAssertEqual(gapEnergy.totalKcal, shortEnergy.totalKcal, accuracy: 1e-9)
-        XCTAssertLessThan(gapEnergy.totalKcal, continuousEnergy.totalKcal,
-                          "a sensor gap must not be treated as continuous exercise")
+        let sparse = stride(from: 0, to: 86_400, by: 30).map { HRSample(ts: $0, bpm: 55) }
+        XCTAssertEqual(sparse.count, 2_880, "one sample every 30 s over 24 h")
+        let total = Calories.estimateDayCalories(sparse, profile: profile, hrmax: 185.0,
+                                                 restingHR: 55.0, bmrSpanS: 86_400)
+        XCTAssertEqual(total, 1825.25, accuracy: 1.0,
+                       "a worn 24 h must total ≈ BMR regardless of sample cadence")
+        // One second per sample would produce 2 880 × restingRate, about 60.8 kcal.
+        XCTAssertGreaterThan(total, 60.84 * 10,
+                             "must not collapse toward the old per-sample undercount")
+        // The dense stream over the same span agrees, which is the cadence-independence claim.
+        let dense = (0..<86_400).map { HRSample(ts: $0, bpm: 55) }
+        let denseTotal = Calories.estimateDayCalories(dense, profile: profile, hrmax: 185.0,
+                                                      restingHR: 55.0, bmrSpanS: 86_400)
+        XCTAssertEqual(total, denseTotal, accuracy: 1e-9,
+                       "sparse and dense coverage of the same day must agree")
+    }
+
+    func testUnwornStretchStillAccruesBasal() {
+        // `bmrSpanS` is elapsed wall clock rather than observed wear, so an hour of heart rate at
+        // the start of the day still credits a full day of basal.
+        let profile = UserProfile(weightKg: 80, heightCm: 180, age: 35, sex: "male")
+        let wornOneHour = hrDay(bpm: 55, n: 3_600)
+        let fullDay = Calories.estimateDayCalories(wornOneHour, profile: profile, hrmax: 185.0,
+                                                   restingHR: 55.0, bmrSpanS: 86_400)
+        XCTAssertEqual(fullDay, 1825.25, accuracy: 1.0,
+                       "basal spans the elapsed day even where the strap was off")
+        // Half the day elapsed gives half the basal, so the total accumulates.
+        let halfDay = Calories.estimateDayCalories(wornOneHour, profile: profile, hrmax: 185.0,
+                                                   restingHR: 55.0, bmrSpanS: 43_200)
+        XCTAssertEqual(halfDay, 1825.25 / 2.0, accuracy: 1.0)
+        XCTAssertLessThan(halfDay, fullDay, "a partially-elapsed day must total less than a full one")
+    }
+
+    func testDayGapCapsSurplusNotBasal() {
+        // Elapsed-time weighting is safe only because the terms are integrated apart: basal on the
+        // wall clock, and the surplus above resting on measured wear, capped at `dayMaxGapS`. Two
+        // active samples an hour apart must not credit an hour of exercise, while basal still covers
+        // the whole span.
+        let profile = UserProfile(weightKg: 80, heightCm: 180, age: 35, sex: "male")
+        let gapped = [HRSample(ts: 0, bpm: 130), HRSample(ts: 3_600, bpm: 130)]
+        let total = Calories.estimateDayCalories(gapped, profile: profile, hrmax: 185.0,
+                                                 restingHR: 55.0, bmrSpanS: 3_601)
+        XCTAssertEqual(total, 96.87, accuracy: 0.5,
+                       "basal over 3601 s + surplus over (120 s + 1 s), not over the full hour")
+        // Crediting the gap in full would be about 695 kcal, seven times larger.
+        XCTAssertLessThan(total, 200.0, "an unbridged hour must not be credited as an hour of effort")
+        // And basal is never double-counted: the total always at least covers the elapsed span.
+        XCTAssertGreaterThan(total, 1825.247 / 86_400.0 * 3_601.0)
+    }
+
+    func testBmrSpanNilFallsBackToObservedSpan() {
+        // With no span the estimator uses the one its own samples cover, first to last inclusive, so
+        // a dense 1 Hz day credits exactly one second per sample.
+        let profile = UserProfile(weightKg: 80, heightCm: 180, age: 35, sex: "male")
+        let dense = (0..<600).map { HRSample(ts: $0, bpm: 130) }
+        let implicitSpan = Calories.estimateDayCalories(dense, profile: profile,
+                                                        hrmax: 185.0, restingHR: 55.0)
+        let explicitSpan = Calories.estimateDayCalories(dense, profile: profile, hrmax: 185.0,
+                                                        restingHR: 55.0, bmrSpanS: 600)
+        XCTAssertEqual(implicitSpan, explicitSpan, accuracy: 1e-9)
     }
 
     // A timestamp safely inside UTC day 2026-01-02 (2026-01-02T12:00:00Z).

@@ -1,5 +1,7 @@
 package com.noop.analytics
 
+import com.noop.analytics.calorie.ActivityDay
+import com.noop.analytics.calorie.CalorieDayScorer
 import com.noop.data.DailyMetric
 import com.noop.data.EventRow
 import com.noop.data.GravitySample
@@ -11,6 +13,8 @@ import com.noop.data.Spo2Sample
 import com.noop.data.RespSample
 import com.noop.data.RrInterval
 import com.noop.data.StepSample
+import com.noop.analytics.calorie.CalorieVitals
+import com.noop.analytics.calorie.Calories
 import com.noop.protocol.DeviceFamily
 import com.noop.protocol.Whoop4SkinTemp
 import com.noop.protocol.skinTempCelsius
@@ -73,6 +77,26 @@ object AnalyticsEngine {
     ): List<T>? {
         if (dayLo < nightLo || dayHi > nightHi || night.size >= limit) return null
         return night.filter { ts(it) in dayLo..dayHi }
+    }
+
+    /**
+     * The most recent measured resting HR in [rows] on or before [day], for a day that staged no
+     * sleep of its own.
+     *
+     * Resting HR changes slowly, so a measurement of any age is preferred to the invented default a
+     * missing value would otherwise take, which moves both the effort gate and the VO₂max estimate.
+     * Several sources on the winning day are averaged, because they disagree by a few bpm and no
+     * precedence between them is defensible.
+     *
+     * Scoped to energy. A score meant to reflect the night just measured must read that night's own
+     * resting HR, not a carried-forward one.
+     *
+     * [rows] may be in any order and may contain days after [day].
+     */
+    fun calorieRestingHR(rows: List<DailyMetric>, day: String): Double? {
+        val onOrBefore = rows.filter { it.day <= day && it.restingHr != null }
+        val latest = onOrBefore.maxOfOrNull { it.day } ?: return null
+        return onOrBefore.filter { it.day == latest }.map { it.restingHr!!.toDouble() }.average()
     }
 
     /**
@@ -308,6 +332,22 @@ object AnalyticsEngine {
         dayHr: List<HrSample>? = null,
         daySteps: List<StepSample>? = null,
         dayGravity: List<GravitySample>? = null,
+        // The activity-day streams, for the calorie models alone. They cover the same hours as
+        // [dayHr] and [dayGravity] but stay separate so a caller can hand the models a different
+        // resolution of the same day. Null falls back to the calendar-day streams, then to the night
+        // window.
+        calorieHr: List<HrSample>? = null,
+        calorieGravity: List<GravitySample>? = null,
+        // Beat-to-beat coverage over the activity day, folded to one count per second. Only a model
+        // that reads it asks the caller for it; empty means the day carried none.
+        calorieBeats: List<Pair<Long, Int>> = emptyList(),
+        // Workout windows already on record — manual, imported, or started from the auto-detect
+        // nudge — which detection does not reproduce. Unioned with the detected windows rather than
+        // replacing them; a minute is scored once however many windows cover it.
+        recordedWorkouts: List<LongRange> = emptyList(),
+        // Resting HR for the calorie models when this day staged no sleep of its own. Null keeps the
+        // estimators' own default.
+        calorieRestingHR: Double? = null,
         // Wear-gated nightly skin-temp mean is harvested here (baseline-independent); IntelligenceEngine
         // seeds a personal baseline from these means across nights and re-derives skinTempDevC in pass 2
         // (same two-pass shape as avgHrv→recovery). (PR #85)
@@ -411,6 +451,10 @@ object AnalyticsEngine {
         // Threaded rather than read from a global so this stays a pure function, and defaulted so every
         // existing caller and test is byte-identical.
         effortMethod: StrainScorer.Method = StrainScorer.Method.EDWARDS,
+        // Wall-clock now (epoch s), bounding how much of this day has elapsed for the basal term of
+        // the calorie estimate. A past day elapses in full; an in-progress one only up to [nowTs], so
+        // the figure climbs through the day. Null takes the whole window.
+        nowTs: Long? = null,
     ): DayResult {
 
         // Precompute the day's UTC bounds ONCE (#996). isoDay is a FIXED-UTC formatter, so
@@ -770,8 +814,9 @@ object AnalyticsEngine {
         // covers the WHOLE day — an afternoon/evening workout lands in today's Effort same-day instead
         // of being cut off at the night window's ≈ noon bound, and the prior evening's HR no longer
         // bleeds in. Falls back to the night hr for pure-function callers/tests.
-        val effMaxHR: Double? = maxHROverride
-            ?: if (profile.age > 0) StrainScorer.tanakaHRmax(profile.age) else null
+        // Effort and workout detection are held to the same value, so this resolver is not free to
+        // move for energy alone.
+        val effMaxHR: Double? = CalorieVitals.hrmaxFor(profile, maxHROverride)
         val restForStrain = restingHRDaily?.toDouble() ?: StrainScorer.defaultRestingHR
         val strain = StrainScorer.strain(
             hr = dayHr ?: hr,
@@ -847,28 +892,28 @@ object AnalyticsEngine {
         }
 
         // ── Daily calories (APPROXIMATE, HR-only whole-day estimate) ──────────
-        // Whole-day active+resting energy from the full HR window, using the same resting/active
-        // per-second model the per-workout estimate uses (resting BMR below activeThreshold, Keytel
-        // active above). effMaxHR + restingHRDaily are the same effective HRmax / resting baseline
-        // strain uses. Null when there is no HR. A heart-rate ESTIMATE — not cloud/clinical parity.
-        // Whole-day additive totals (steps above, calories here) are summed over the full LOCAL
-        // calendar day supplied by the caller (dayHr / daySteps), NOT the ~42h sleep-detection
-        // window — which, anchored to the current time-of-day, would drop a past day's late hours
-        // and double-count seconds shared with adjacent days. The filter uses the LOCAL-day key
-        // (dayString(ts, tzOffset)) so it agrees with the bucket (#277). Fall back to the
-        // night-window hr for pure-function callers that don't supply dayHr. Strain keeps the full
-        // window (bounded log).
-        val dayHrFiltered = (dayHr ?: hr).filter { tsInDay(it.ts) }
-        val activeKcalEst: Double? = if (dayHrFiltered.isEmpty()) {
-            null
-        } else {
-            Calories.estimateDayCalories(
-                hrSamples = dayHrFiltered,
-                profile = profile,
-                hrmax = effMaxHR,
-                restingHR = restingHRDaily?.toDouble(),
-            )
-        }
+        // The active term alone — the surplus above resting metabolism — and null when the day has no
+        // heart rate at all. An estimate, not cloud or clinical parity.
+        //
+        // Additive day totals are summed over the local calendar day the caller supplies, not the
+        // ~42 h sleep-detection window: that window is anchored to the current time of day, so it
+        // would drop a past day's late hours and double-count seconds shared with adjacent days.
+        // Effort keeps the full window, whose logarithm is bounded.
+        // The day's own resting HR when it has one; a resolved cross-source value only when it does
+        // not.
+        val effCalorieRestingHR = restingHRDaily?.toDouble() ?: calorieRestingHR
+        val scoredEnergy = CalorieDayScorer.score(
+            day = ActivityDay.forKey(day, tzOffsetSeconds),
+            nowUtc = nowTs,
+            hr = calorieHr ?: dayHr ?: hr,
+            gravity = calorieGravity ?: dayGravity ?: gravity,
+            workouts = workouts.map { it.start until it.end } + recordedWorkouts,
+            beats = calorieBeats,
+            profile = profile,
+            hrmax = effMaxHR,
+            restingHR = effCalorieRestingHR,
+        )
+        val activeKcalEst: Double? = scoredEnergy?.activeKcal
 
         // ── Assemble DailyMetric ──────────────────────────────────────────────
         // deviceId is stamped by the caller (IntelligenceEngine persists under
@@ -972,6 +1017,7 @@ object AnalyticsEngine {
             sessionSleepStateByStart = sessionSleepStateByStart,
             gravitySparse = gravitySparse,
             detectionFunnel = detectionFunnel,
+            basalHrBpm = scoredEnergy?.basalHrBpm,
         )
     }
 

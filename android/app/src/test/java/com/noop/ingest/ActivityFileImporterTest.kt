@@ -1,5 +1,6 @@
 package com.noop.ingest
 
+import com.noop.analytics.calorie.Calories
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull

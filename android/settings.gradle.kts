@@ -22,3 +22,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "NOOP"
 include(":app")
+include(":calbench")

@@ -1,11 +1,15 @@
 package com.noop.analytics
 
+import com.noop.analytics.calorie.DynamicHrrModelSetting
+import com.noop.analytics.calorie.EnergyModel
+import com.noop.analytics.calorie.HeartRateGates
+import com.noop.analytics.calorie.HybridModelSetting
+
 /*
  * AnalyticsModels.kt — shared on-device analytics value types.
  *
  * Faithful Kotlin port of the shared model types that the StrandAnalytics Swift
  * package defines and shares across its analyzers:
- *   - StrandAnalytics.swift  → [StrandAnalytics] version marker
  *   - WorkoutDetector.swift  → [UserProfile], [ExerciseSession], [ActivityPoint]
  *   - SleepStager.swift      → [StageSegment], [DetectedSleep], [HypnogramMetrics]
  *   - Baselines.swift        → [MetricCfg], [BaselineStatus], [BaselineState], [Deviation]
@@ -23,11 +27,6 @@ package com.noop.analytics
  * All derived intensity / energy / sleep-stage outputs are APPROXIMATE and not
  * medical advice (see the per-analyzer Swift headers).
  */
-
-/** On-device analytics namespace marker. Mirrors Swift `StrandAnalytics`. */
-object StrandAnalytics {
-    const val VERSION: String = "0.1.0"
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UserProfile (WorkoutDetector.swift)
@@ -47,11 +46,43 @@ data class UserProfile(
      */
     val stepTicksPerStep: Double = 1.0,
     /**
+     * Measured VO₂max (ml/kg/min) from a lab or field test; 0 derives it instead.
+     *
+     * The derived value is a population regression over the heart-rate ratio, which swings hard on a
+     * resting HR the wearer never measured directly, so a real measurement replaces it everywhere.
+     */
+    val vo2maxOverride: Double = 0.0,
+    /**
      * Waist circumference (cm) for the Fitness Age VO₂max estimate (Phase 2). 0 = not set.
      * Optional — it UNLOCKS the VO₂max readout but does NOT sharpen the headline Fitness Age
      * (the body term cancels out of the age formula). Default param so existing call-sites compile.
      */
     val waistCm: Double = 0.0,
+    /**
+     * The wearer's heart-rate gates.
+     *
+     * Carried on the profile rather than passed separately, because every engine that reads it
+     * already takes a profile. Defaults to the shipped constants.
+     */
+    val heartRateGates: HeartRateGates = HeartRateGates(),
+    /** The wearer's motion-hybrid settings, carried and defaulted like [heartRateGates]. */
+    val hybridModelSetting: HybridModelSetting = HybridModelSetting(),
+    /** The wearer's measured-basal settings, carried and defaulted like [heartRateGates]. */
+    val dynamicHrrModelSetting: DynamicHrrModelSetting = DynamicHrrModelSetting(),
+    /**
+     * Five personalized inclusive heart-rate zone starts in bpm, or null for the conventional
+     * percentage-of-maximum zones.
+     *
+     * Strictly increasing when present; a stored value that is not is treated as absent.
+     */
+    val hrZoneThresholds: List<Double>? = null,
+    /**
+     * Which model produces the day's headline calorie figure.
+     *
+     * A selection rather than a setting, so it belongs to neither settings type: each of those
+     * describes one model and would otherwise name another.
+     */
+    val calorieModel: EnergyModel = EnergyModel.HEART_RATE,
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -318,4 +349,12 @@ data class DayResult(
      * the counts exist to explain. Trailing + defaulted so every existing construction site is unchanged.
      */
     val detectionFunnel: WorkoutDetector.DetectionFunnel? = null,
+    /**
+     * The basal heart rate (bpm) this day's energy was anchored on, or null when the model that
+     * scored it measures none.
+     *
+     * A different quantity from [com.noop.data.DailyMetric.restingHr], which is read over sleep: this
+     * one is read over a still waking stretch.
+     */
+    val basalHrBpm: Double? = null,
 )

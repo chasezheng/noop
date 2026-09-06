@@ -6,4 +6,7 @@ plugins {
     id("org.jetbrains.kotlin.android") version "1.9.24" apply false
     // KSP version is <kotlinVersion>-<kspVersion>; must track the Kotlin version exactly.
     id("com.google.devtools.ksp") version "1.9.24-1.0.20" apply false
+    // The `:calbench` harness is plain JVM: it compiles the app's pure analytics sources without
+    // the Android plugin, so it needs the JVM flavour of the same Kotlin version.
+    id("org.jetbrains.kotlin.jvm") version "1.9.24" apply false
 }

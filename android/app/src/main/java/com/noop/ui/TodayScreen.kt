@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.MonitorWeight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -162,6 +163,9 @@ import com.noop.analytics.SleepMark
 import com.noop.analytics.SleepMarkType
 import com.noop.analytics.StepsEstimateEngine
 import com.noop.analytics.StrainScorer
+import com.noop.analytics.calorie.Calories
+import com.noop.analytics.calorie.ActivityDay
+import com.noop.analytics.calorie.exclusiveEnd
 import com.noop.ble.WhoopModel
 import com.noop.data.DailyMetric
 import com.noop.protocol.Whoop5RR
@@ -302,6 +306,9 @@ fun TodayScreen(
     onOpenCoupled: () -> Unit = {},
     /** #1862: open Coach, optionally with a question the Today launcher already collected. */
     onOpenCoach: (String?) -> Unit = {},
+    // This card's detail is one day decomposed rather than a trend across days, so it carries the day
+    // rather than a metric key. Defaulted to a no-op for a caller that binds no route.
+    onOpenCalorie: (java.time.LocalDate) -> Unit = {},
     // The "workout in progress" indicator card routes to Live and re-opens the in-exercise overlay. Defaulted
     // to a no-op so the call site stays compiling; AppRoot binds it to openActiveWorkout() + nav.navigate(Live).
     onOpenActiveWorkout: () -> Unit = {},
@@ -316,6 +323,7 @@ fun TodayScreen(
     val alert by viewModel.healthAlert.collectAsStateWithLifecycle()
     val days by viewModel.recentDays.collectAsStateWithLifecycle()
     val activeDayCycle by viewModel.activeDayCycle.collectAsStateWithLifecycle()
+    val vitalSources by viewModel.healthConnectVitalSources.collectAsStateWithLifecycle()
     val spo2CandidateByDay by viewModel.spo2CandidateByDay.collectAsStateWithLifecycle()
     val v5Signals by viewModel.v5Signals.collectAsStateWithLifecycle()
     val cycleEnabled by viewModel.cycleTrackingEnabled.collectAsStateWithLifecycle()
@@ -616,18 +624,24 @@ fun TodayScreen(
     // Keyed by day; `caloriesByDay` feeds the SELECTED-day value the dashboard card + Key-Metrics tile both
     // read — day-scoped like every other card, and like steps.
     var caloriesByDay by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
-    LaunchedEffect(days) {
-        caloriesByDay = runCatching {
-            val onDevice = viewModel.repo.resolvedSeries("active_kcal", "my-whoop", "0000-00-00", "9999-99-99",
-                strapDeviceId = viewModel.activeStrapId).points.associate { it.day to it.value }
-            val imported = LinkedHashMap<String, Double>()
-            for (r in viewModel.repo.appleDaily("apple-health", "0000-01-01", "9999-12-31") +
-                viewModel.repo.appleDaily("health-connect", "0000-01-01", "9999-12-31")) {
-                r.activeKcal?.takeIf { it > 0 }?.let { imported.putIfAbsent(r.day, it) }
-            }
-            (onDevice.keys + imported.keys)
-                .mapNotNull { day -> (imported[day] ?: onDevice[day])?.let { day to it } }.toMap()
-        }.getOrDefault(emptyMap())
+    // Keyed on the preference as well as the days: flipping it changes no stored row, so nothing else
+    // would invalidate this.
+    val preferOnDeviceCalories = viewModel.caloriePreferOnDevice()
+    LaunchedEffect(days, preferOnDeviceCalories) {
+        caloriesByDay = activeCaloriesByDay(viewModel)
+    }
+
+    // Resting energy over the selected day's WHOLE 24 hours, which is what a day costs rather than
+    // what it has cost so far. No column stores basal, and it is pure in the profile and the day's
+    // length, so it is re-derived here rather than read.
+    //
+    // The span is the activity day, not the calendar day: pairing a calendar-day resting figure with
+    // an activity-day active figure would make the total a sum of two different days.
+    val basalProfile = remember(selectedDay) { ProfileStore.from(context).toUserProfile() }
+    val basalKcal24hForSelectedDay = remember(selectedDay, basalProfile) {
+        val midnight = selectedDay.atStartOfDay(ZoneId.systemDefault()).toEpochSecond()
+        val window = ActivityDay.atLocalMidnight(midnight).window()
+        Calories.basalKcalForSpan(basalProfile, (window.exclusiveEnd - window.first).toDouble())
     }
 
     // #616: the Calories tile's 14-day sparkline — the IMPORTED-FIRST resolved series (caloriesByDay),
@@ -1673,6 +1687,7 @@ fun TodayScreen(
                                     estimatedStepsForDay = stepsEstForDay,
                                     caloriesForDay = caloriesByDay[selectedDayKey],
                                     caloriesSpark = caloriesSpark,                    // #616: imported-first trend
+                                    basalKcalForDay = basalKcal24hForSelectedDay,
                                     stepActivityClassForDay = stepActivityClassForDay,
                                     stepsEstimateCaption = stepsEstimateCaption(profileStore),
                                     // Resolve the semantic engine headline at the composable UI boundary.
@@ -1697,6 +1712,7 @@ fun TodayScreen(
                                     windowDays = keyMetricsWindowDays,
                                     onOpenMetric = onOpenMetric,
                                     onOpenStepsCalibration = onOpenStepsCalibration,
+                                    onOpenCalorie = { onOpenCalorie(selectedDay) },
                                 )
                             }
                         }
@@ -1717,8 +1733,13 @@ fun TodayScreen(
                         }
                         // The three hero vitals, HRV / Resting HR / Respiratory. Carried day (#543).
                         TodaySection.RECOVERY_VITALS -> Box(modifier = Modifier.fillMaxWidth().staggeredAppear(stagger)) {
-                            HeroMetricRows(day = displayMetric, carriedDay = lastScoredRecoveryDay,
-                                           vitalsDay = lastVitalsDay, onOpenMetric = onOpenMetric)
+                            HeroMetricRows(
+                                day = displayMetric,
+                                carriedDay = lastScoredRecoveryDay,
+                                vitalsDay = lastVitalsDay,
+                                vitalSources = vitalSources,
+                                onOpenMetric = onOpenMetric,
+                            )
                         }
                         // YOUR CARDS, the user-customisable dashboard (WHOOP "My Dashboard"). Hydration is
                         // hidden when its tracking is OFF (the editor still offers it, so the choice
@@ -1742,6 +1763,7 @@ fun TodayScreen(
                             importedStepsForDay = importedStepsForDay,
                             estimatedStepsForDay = stepsEstForDay,
                             caloriesForDay = caloriesByDay[selectedDayKey],
+                            basalKcalForDay = basalKcal24hForSelectedDay,
                             hydrationTotalMl = hydrationTotalMl,
                             hydrationGoalMl = hydrationGoalMl,
                             onOpenHydration = onOpenHydration,
@@ -1750,8 +1772,10 @@ fun TodayScreen(
                             onOpenSleep = onOpenSleep,
                             onOpenCoupled = onOpenCoupled,
                             onOpenCoach = onOpenCoach,
+                            onOpenCalorie = { onOpenCalorie(selectedDay) },
                             onCustomise = { showDashboardEditor = true },
                             spo2CandidateByDay = spo2CandidateByDay,
+                            vitalSources = vitalSources,
                         )
                         TodaySection.MENSTRUAL_CYCLE -> MenstrualCycleHomeCard(
                             enabled = cycleEnabled,
@@ -3389,6 +3413,7 @@ private fun HeroMetricRows(
     day: DailyMetric?,
     carriedDay: DailyMetric? = null,
     vitalsDay: DailyMetric? = null,
+    vitalSources: VitalSourceMap = emptyMap(),
     // #706/#684: the same `vital_detail/<key>` trends the HRV / Resting HR / Respiratory dashboard cards
     // open. These three rows show the SAME metrics and had no way through, so the summary card was the one
     // place on Today where a metric was a dead end. Keys come from `dashboardCardMetricKey`, so the two
@@ -3399,6 +3424,12 @@ private fun HeroMetricRows(
     val hrv = day?.avgHrv ?: vitalsDay?.avgHrv
     val rhr = day?.restingHr ?: vitalsDay?.restingHr
     val resp = day?.respRateBpm ?: vitalsDay?.respRateBpm
+    // Per-field provenance: a merged row carries one deviceId, so a vital another source won would
+    // otherwise read as the strap's. Resolved against the row that supplied each number, which the
+    // carry above may have made a different night from the one the header stamps.
+    val hrvSource = vitalFieldSourceLabel("hrv", vitalValueDay(day, vitalsDay) { it.avgHrv != null }, vitalSources)
+    val rhrSource = vitalFieldSourceLabel("rhr", vitalValueDay(day, vitalsDay) { it.restingHr != null }, vitalSources)
+    val respSource = vitalFieldSourceLabel("resp", vitalValueDay(day, vitalsDay) { it.respRateBpm != null }, vitalSources)
     // The caption reflects the row the shown vitals actually came from: if today supplied ANY of them the
     // values are today's own, so don't stamp them as a prior "Last night · <date>"; only when EVERY shown
     // vital is carried do we stamp the carry's date (relabelled "Latest sleep · <date>" when weeks-old).
@@ -3432,6 +3463,7 @@ private fun HeroMetricRows(
                 value = hrv?.let { "${it.roundToInt()} ms" } ?: NO_DATA,
                 tint = Palette.metricCyan,
                 fraction = hrv?.let { (it / 120.0).coerceIn(0.0, 1.0) },
+                source = hrvSource,
                 metricKey = dashboardCardMetricKey(DashboardCard.HRV),
                 onOpenMetric = onOpenMetric,
             )
@@ -3440,6 +3472,7 @@ private fun HeroMetricRows(
                 value = rhr?.let { "$it bpm" } ?: NO_DATA,
                 tint = Palette.metricRose,
                 fraction = rhr?.let { (it / 100.0).coerceIn(0.0, 1.0) },
+                source = rhrSource,
                 metricKey = dashboardCardMetricKey(DashboardCard.RESTING_HR),
                 onOpenMetric = onOpenMetric,
             )
@@ -3448,6 +3481,7 @@ private fun HeroMetricRows(
                 value = resp?.let { String.format(Locale.getDefault(), "%.1f rpm", it) } ?: NO_DATA,
                 tint = Palette.accent,
                 fraction = resp?.let { (it / 24.0).coerceIn(0.0, 1.0) },
+                source = respSource,
                 metricKey = dashboardCardMetricKey(DashboardCard.RESPIRATORY),
                 onOpenMetric = onOpenMetric,
             )
@@ -3470,13 +3504,16 @@ private fun heroVitalsLastNightLine(): String {
 }
 
 /** One iOS `vitalRow`: a 26dp mini liquid VESSEL filled to [fraction] in [tint], the label (subhead,
- *  secondary), a spacer, and the value (number 15, primary). Replaces the old flat-Material-icon row. */
+ *  secondary), a spacer, and the value (number 15, primary). Replaces the old flat-Material-icon row.
+ *  [source] names the field's own provenance, drawn only where the read-time merge decided it, so the
+ *  card's single "Last night" stamp is not left implying the strap measured a phone's number. */
 @Composable
 private fun HeroVitalRow(
     label: String,
     value: String,
     tint: Color,
     fraction: Double?,
+    source: DisplayText? = null,
     // The metric-detail key this row opens, from `dashboardCardMetricKey` so the row and its dashboard-card
     // twin cannot drift onto different trends for the same vital. NULL means the row simply does not
     // navigate: it loses the tap AND the chevron together, which is the honest degradation. An earlier
@@ -3502,7 +3539,18 @@ private fun HeroVitalRow(
             animated = false,
             modifier = Modifier.size(26.dp),
         )
-        Text(label, style = NoopType.subhead, color = Palette.textSecondary, modifier = Modifier.weight(1f))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = NoopType.subhead, color = Palette.textSecondary)
+            if (source != null && hasValue) {
+                Text(
+                    source.localized(),
+                    style = NoopType.caption,
+                    color = provenanceLabelTint(source),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         Text(
             displayValue,
             style = NoopType.number(15f),
@@ -3735,6 +3783,7 @@ private fun YourCardsSection(
     importedStepsForDay: Int?,
     estimatedStepsForDay: Int?,
     caloriesForDay: Double?,
+    basalKcalForDay: Double,
     hydrationTotalMl: Double,
     hydrationGoalMl: Int,
     onOpenHydration: () -> Unit,
@@ -3743,8 +3792,10 @@ private fun YourCardsSection(
     onOpenSleep: () -> Unit,
     onOpenCoupled: () -> Unit,
     onOpenCoach: (String?) -> Unit,
+    onOpenCalorie: () -> Unit,
     onCustomise: () -> Unit,
     spo2CandidateByDay: Map<String, Double> = emptyMap(),
+    vitalSources: VitalSourceMap = emptyMap(),
 ) {
     // #1331 parity: honor the °C/°F preference on the Skin Temp card, the way Health / Compare (and the
     // Swift twin) do. The classic dashboard hardcoded Celsius here alone, so a °F user saw °C on this
@@ -3800,6 +3851,7 @@ private fun YourCardsSection(
                         importedStepsForDay = importedStepsForDay,
                         estimatedStepsForDay = estimatedStepsForDay,
                         caloriesForDay = caloriesForDay,
+                        basalKcalForDay = basalKcalForDay,
                         hydrationTotalMl = hydrationTotalMl,
                         hydrationGoalMl = hydrationGoalMl,
                         spo2CandidateByDay = spo2CandidateByDay,
@@ -3822,7 +3874,18 @@ private fun YourCardsSection(
                     // #110: label the sleep row with its source + night (this section renders at offset 0
                     // only, so it IS last night), so a WHOOP-imported figure is never silently shown as
                     // "last night" with no provenance. iOS TodayView.sleepSourceSubtitle twin.
-                    subtitleOverride = sleepSourceSubtitle(card, day),
+                    // A vital Health Connect won at read time is stamped with ITS source here: the merged
+                    // row keeps the computed strap's deviceId, so nothing else on the row can say so.
+                    subtitleOverride = sleepSourceSubtitle(card, day)
+                        ?: dashboardVitalSourceLabel(
+                            card = card,
+                            day = day,
+                            carriedDay = carriedDay,
+                            vitalsDay = vitalsDay,
+                            spo2Day = spo2Day,
+                            respDay = respDay,
+                            vitalSources = vitalSources,
+                        )?.localized(),
                     // #706/#684: every card now opens its OWN detail, matching iOS. The Stress card -> Stress;
                     // the overnight vitals (HRV / Resting HR / Respiratory / SpO₂ / Skin Temp) + Fitness age /
                     // Vitality / Steps / Calories -> each metric's focused trend (vital_detail/<key>, the iOS
@@ -3835,6 +3898,7 @@ private fun YourCardsSection(
                         onOpenHydration = onOpenHydration,
                         onOpenCoupled = onOpenCoupled,
                         onOpenCoach = { showCoachLauncher = true },
+                        onOpenCalorie = onOpenCalorie,
                     ),
                 )
             }
@@ -3859,6 +3923,31 @@ private fun sleepSourceSubtitle(card: DashboardCard, day: DailyMetric?): String?
     return uiString(R.string.today_sleep_source_last_night, source)
 }
 
+/** The provenance caption for a vitals card whose number the read-time Health Connect arbitration won,
+ *  else null (the card keeps its static description, which is what every field the row supplied itself
+ *  still deserves). Each card resolves the day its OWN value came from through the SAME per-field carry
+ *  chain [dashboardCardValue] uses — a caption keyed on the selected day would credit a carried number
+ *  to a night that never measured it. Pure, so the chains are pinned by a unit test rather than by eye. */
+internal fun dashboardVitalSourceLabel(
+    card: DashboardCard,
+    day: DailyMetric?,
+    carriedDay: DailyMetric?,
+    vitalsDay: DailyMetric?,
+    spo2Day: DailyMetric?,
+    respDay: DailyMetric?,
+    vitalSources: VitalSourceMap,
+): DisplayText? = when (card) {
+    DashboardCard.HRV ->
+        vitalFieldSourceLabel("hrv", vitalValueDay(day, vitalsDay) { it.avgHrv != null }, vitalSources)
+    DashboardCard.RESTING_HR ->
+        vitalFieldSourceLabel("rhr", vitalValueDay(day, vitalsDay) { it.restingHr != null }, vitalSources)
+    DashboardCard.RESPIRATORY ->
+        vitalFieldSourceLabel("resp", vitalValueDay(day, respDay) { it.respRateBpm != null }, vitalSources)
+    DashboardCard.BLOOD_OXYGEN ->
+        vitalFieldSourceLabel("spo2", vitalValueDay(carriedDay ?: day, spo2Day) { it.spo2Pct != null }, vitalSources)
+    else -> null
+}
+
 /** The `vital_detail/<key>` key a metric/vital card opens, or null when the card has its OWN dedicated
  *  screen (Stress / Sleep / Hydration / Coupled) rather than a metric-detail trend. Mirrors the iOS
  *  `liquidCard` switch, where every metric/vital card opens `metricDetail(key)` (its own focused trend),
@@ -3875,7 +3964,8 @@ internal fun dashboardCardMetricKey(card: DashboardCard): String? = when (card) 
     DashboardCard.STEPS -> "steps_est"
     DashboardCard.CALORIES -> "active_kcal"
     // These carry their own full screen, not a per-metric trend.
-    DashboardCard.STRESS, DashboardCard.SLEEP, DashboardCard.HYDRATION, DashboardCard.COUPLED,
+    DashboardCard.TOTAL_ENERGY, DashboardCard.STRESS, DashboardCard.SLEEP,
+    DashboardCard.HYDRATION, DashboardCard.COUPLED,
     // #1862: a launcher row, not a metric — no explorer key.
     DashboardCard.COACH -> null
 }
@@ -3895,10 +3985,14 @@ private fun dashboardCardDestination(
     // a callback that shows the launcher. Kept in this same resolver so every card still resolves to
     // exactly one tap action and the chevron stays honest.
     onOpenCoach: () -> Unit,
+    onOpenCalorie: () -> Unit,
 ): () -> Unit = when (card) {
     DashboardCard.STRESS -> onOpenStress
     DashboardCard.SLEEP -> onOpenSleep
     DashboardCard.HYDRATION -> onOpenHydration
+    // The one card whose detail is a day rather than a trend: where the day's energy came from,
+    // minute by minute.
+    DashboardCard.TOTAL_ENERGY -> onOpenCalorie
     // The Coupled view card (#43) taps through to the full WHOOP-style day screen.
     DashboardCard.COUPLED -> onOpenCoupled
     DashboardCard.COACH -> onOpenCoach
@@ -3930,6 +4024,7 @@ private fun dashboardCardTint(card: DashboardCard): Color = when (card) {
     DashboardCard.SLEEP -> Palette.restColor
     DashboardCard.STEPS -> Palette.metricCyan
     DashboardCard.CALORIES -> Palette.metricAmber
+    DashboardCard.TOTAL_ENERGY -> Palette.metricAmber
     DashboardCard.HYDRATION -> Palette.metricCyan
     DashboardCard.COUPLED -> Palette.chargeColor
     DashboardCard.COACH -> Palette.accent
@@ -3982,7 +4077,7 @@ private fun dashboardCardFraction(
         DashboardCard.COACH -> 0.5
         // Not wired to a real read yet — an EMPTY vessel (not half-full) so it doesn't imply a reading.
         DashboardCard.BLOOD_OXYGEN, DashboardCard.SKIN_TEMP, DashboardCard.CALORIES,
-        DashboardCard.HYDRATION -> null
+        DashboardCard.TOTAL_ENERGY, DashboardCard.HYDRATION -> null
     }
 }
 
@@ -4016,6 +4111,9 @@ private fun dashboardCardValue(
     importedStepsForDay: Int?,
     estimatedStepsForDay: Int?,
     caloriesForDay: Double?,
+    // Passed in rather than computed here, so this stays a pure formatter like every value it
+    // renders.
+    basalKcalForDay: Double,
     hydrationTotalMl: Double,
     hydrationGoalMl: Int,
     spo2CandidateByDay: Map<String, Double> = emptyMap(),
@@ -4082,6 +4180,16 @@ private fun dashboardCardValue(
         }
         DashboardCard.CALORIES ->
             withUnit(caloriesForDay?.let { intStringGrouped(it) } ?: NO_DATA)
+        // Active so far plus the day's whole 24 hours of resting. No column stores basal, so it is
+        // re-derived from the profile, which is exact rather than an approximation of a figure never
+        // written down. No active figure means no total, rather than a bare basal that would read as
+        // a day's whole expenditure. The active term may come from a phone while the resting term is
+        // always NOOP's, so this can differ from the detail screen behind the card, which derives
+        // both from NOOP.
+        DashboardCard.TOTAL_ENERGY ->
+            withUnit(
+                caloriesForDay?.let { intStringGrouped(it + basalKcalForDay) } ?: NO_DATA,
+            )
         DashboardCard.STRESS ->
             // #706/#684: Stress is baseline-relative, so until the strap has banked enough worn nights to
             // seed the 30-day RHR/HRV baseline StressScreen reads, the front card has no number to show. The
@@ -5504,7 +5612,7 @@ internal fun resolveSkinTempReading(
 /**
  * The full 14-day metric grid, mirroring the macOS LazyVGrid order:
  * Charge, Effort, Rest, HRV, Resting HR, Blood Oxygen, Respiratory,
- * Steps, Weight, Calories. Each tile is a fixed-height [SparkStatTile] so the
+ * Steps, Weight, Calories, Total Energy. Each tile is a fixed-height [SparkStatTile] so the
  * grid tiles perfectly with no empty cells.
  */
 @Composable
@@ -5550,6 +5658,9 @@ private fun MetricGrid(
     // #616: the Calories tile's imported-first 14-day trend (see caloriesSpark above) — threaded like
     // restSpark because it isn't a plain DailyMetric column (it unions the imported + on-device series).
     caloriesSpark: List<Double> = emptyList(),
+    // The selected day's resting energy over its whole 24 hours. Passed in rather than derived here,
+    // so the Total Energy tile and the dashboard card of the same name read one figure.
+    basalKcalForDay: Double = 0.0,
     // #316 / @63, the selected day's representative activity class (0=still, 1=walk, 2=run), shown as a small
     // still/walk/run glyph on a REAL (measured) Steps tile. null hides the icon (no classed sample for the day).
     stepActivityClassForDay: Int? = null,
@@ -5587,6 +5698,8 @@ private fun MetricGrid(
     onOpenMetric: (String) -> Unit = {},
     // Exception for the actionable blank WHOOP 4.0 state: it opens the canonical calibration screen.
     onOpenStepsCalibration: () -> Unit = {},
+    // Total Energy has no per-metric trend of its own; it opens the day the figure was built from.
+    onOpenCalorie: () -> Unit = {},
 ) {
     val realStepsForDay = d?.steps ?: importedStepsForDay
     val stepsOpenCalibration = stepsTileShouldOpenCalibration(
@@ -5768,6 +5881,19 @@ private fun MetricGrid(
                 spark = w.skinTemp,
             )
         },
+        KeyMetric.TOTAL_ENERGY to run {
+            // The same sum the dashboard card of this name shows: the resolved active figure plus the
+            // day's whole resting term. No active figure means no total, rather than a bare resting
+            // term that would read as a day's whole expenditure.
+            val kcal = caloriesForDay?.plus(basalKcalForDay)
+            KeyTileData(
+                label = uiString(R.string.today_metric_total_energy),
+                value = kcal?.let { intString(it) } ?: NO_DATA,
+                unit = if (kcal != null) "kcal" else "",
+                tint = Palette.metricAmber,
+                frac = kcal?.let { (it / 3000.0).coerceIn(0.0, 1.0) },
+            )
+        },
     )
 
     // Resolve the enabled tiles to their descriptors (keeping the metric for the tap mapping), dropping
@@ -5788,6 +5914,7 @@ private fun MetricGrid(
         KeyMetric.RESPIRATORY -> ({ onOpenMetric("resp") })
         KeyMetric.STEPS -> if (stepsOpenCalibration) onOpenStepsCalibration else ({ onOpenMetric("steps_est") })
         KeyMetric.CALORIES -> ({ onOpenMetric("active_kcal") })
+        KeyMetric.TOTAL_ENERGY -> onOpenCalorie
         KeyMetric.WEIGHT -> null
         // Same "skin" vital_detail key `dashboardCardMetricKey(DashboardCard.SKIN_TEMP)` already routes
         // to — confirmed a working destination there, so this tile opens the SAME screen "Your Cards"
@@ -5875,8 +6002,8 @@ private data class KeyTileData(
 
 /** The per-metric glyph shown beside a Key-Metric tile's label — the Android twin of iOS
  *  `LiquidTodayView.keyMetricIcon`, using Material equivalents of its SF Symbols: heart / bolt / moon /
- *  trend line / heart-monitor / drop / air (≈lungs) / walk / scale / flame. Tinted to the tile colour at
- *  render, so the icon reads as the same signal as the bar. */
+ *  trend line / heart-monitor / drop / air (≈lungs) / walk / scale / flame / hotter flame. Tinted to the
+ *  tile colour at render, so the icon reads as the same signal as the bar. */
 private fun keyMetricIcon(metric: KeyMetric): ImageVector = when (metric) {
     KeyMetric.CHARGE -> Icons.Filled.Favorite
     KeyMetric.EFFORT -> Icons.Filled.Bolt
@@ -5890,6 +6017,7 @@ private fun keyMetricIcon(metric: KeyMetric): ImageVector = when (metric) {
     KeyMetric.CALORIES -> Icons.Filled.LocalFireDepartment
     // Same glyph the sibling "Your Cards" tile (DashboardCard.SKIN_TEMP) already uses.
     KeyMetric.SKIN_TEMP -> Icons.Filled.Thermostat
+    KeyMetric.TOTAL_ENERGY -> Icons.Filled.Whatshot
 }
 
 /**
@@ -6392,7 +6520,7 @@ private fun HeartRateTrendCard(
 // clamped into the strip. "Now" keeps its right-edge slot; a tick label that would collide with
 // it (or with its left neighbour) is skipped rather than overlapped.
 @Composable
-private fun HrTimeAxisLabels(
+internal fun HrTimeAxisLabels(
     ticks: List<Pair<Long, String>>,
     timestamps: List<Long>,
     showNow: Boolean,

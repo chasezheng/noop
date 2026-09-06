@@ -4,21 +4,36 @@ import WhoopStore
 
 // WorkoutDetector.swift — retroactive workout detection from the 1 Hz store.
 //
-// Ported from server/ingest/app/analysis/exercise.py (+ activity.py, calories.py).
+// Ported from server/ingest/app/analysis/exercise.py (+ activity.py).
 //
 // A workout is a SUSTAINED window (≥ MIN_EXERCISE_MIN) of elevated HR (above
 // resting + HR_MARGIN_BPM) AND sustained motion (gravity-derived intensity above
 // MOTION_THRESHOLD). Both gates must hold for a sample to count as active.
 //
 // Per detected bout: avg/peak HR, duration, Edwards zone time-%, mean %HRR,
-// strain (StrainScorer), and estimated calories (Keytel 2005 active + revised
-// Harris–Benedict BMR resting, age/sex/weight/height adjusted).
+// strain (StrainScorer), and estimated calories (`Calories.estimateBoutCalories`).
 //
 // All intensity/energy outputs are APPROXIMATE and not medical advice.
 
 // MARK: - Profile + result
 
 /// User profile for calorie estimation.
+/// One day's energy expenditure, reported as a basal term and an active term.
+///
+/// `activeKcal` is the surplus above resting metabolism, which is the quantity Apple Health and
+/// Health Connect write as active energy. `basalKcal` is resting metabolism over the elapsed day, and
+/// `totalKcal` is their sum. Twin of Kotlin `DayEnergy`.
+public struct DayEnergy: Equatable, Sendable {
+    public let totalKcal: Double
+    public let basalKcal: Double
+    public let activeKcal: Double
+    public init(totalKcal: Double, basalKcal: Double, activeKcal: Double) {
+        self.totalKcal = totalKcal
+        self.basalKcal = basalKcal
+        self.activeKcal = activeKcal
+    }
+}
+
 public struct UserProfile: Equatable, Sendable {
     public var weightKg: Double
     public var heightCm: Double
@@ -28,12 +43,18 @@ public struct UserProfile: Equatable, Sendable {
     /// counter overcounts and its true tick rate is unknown, so the daily-steps total
     /// divides by this. 1.0 = raw pass-through (default); the engine clamps ≥ 0.5.
     public var stepTicksPerStep: Double
+    /// Measured VO₂max (ml/kg/min) from a lab or field test; 0 derives it instead.
+    ///
+    /// The derived value is a population regression over the heart-rate ratio, which swings hard on a
+    /// resting HR the wearer never measured directly, so a real measurement replaces it everywhere.
+    public var vo2maxOverride: Double
     public init(weightKg: Double = 70.0, heightCm: Double = 170.0,
                 age: Double = 30.0, sex: String = "nonbinary",
-                stepTicksPerStep: Double = 1.0) {
+                stepTicksPerStep: Double = 1.0, vo2maxOverride: Double = 0.0) {
         self.weightKg = weightKg; self.heightCm = heightCm
         self.age = age; self.sex = sex
         self.stepTicksPerStep = stepTicksPerStep
+        self.vo2maxOverride = vo2maxOverride
     }
 }
 
@@ -569,280 +590,5 @@ public enum WorkoutDetector {
             strain: real.strain ?? strain,
             distanceM: real.distanceM, zonesJSON: real.zonesJSON, notes: real.notes,
             steps: real.steps)
-    }
-}
-
-// MARK: - Calories (calories.py)
-
-/// HR-based calorie estimation (Keytel 2005 active + revised Harris–Benedict BMR).
-/// APPROXIMATE — not laboratory calorimetry, not medical advice.
-public enum Calories {
-
-    /// Whole-day energy split. `restingKcal` is the BMR contribution over supported sample intervals;
-    /// `activeKcal` is energy above that resting floor during supported high-HR intervals.
-    /// `totalKcal` is the backward-compatible value persisted in `DailyMetric.activeKcalEst`.
-    public struct DayEnergyEstimate: Equatable, Sendable {
-        public let restingKcal: Double
-        public let activeKcal: Double
-        public let observedSeconds: Double
-
-        public var totalKcal: Double { restingKcal + activeKcal }
-    }
-
-    struct Coeffs {
-        let restingAlpha: Double
-        let restingWeight: Double
-        let restingHeight: Double  // applied to height in METRES
-        let restingAge: Double
-        // Keytel 2005 base (fitness-blind) active model: EE(kJ/min) = alpha + hr·HR + wt·W + age·A.
-        let workoutHR: Double
-        let workoutWeight: Double
-        let workoutAge: Double
-        let workoutAlpha: Double
-        // Keytel 2005 fitness-ADJUSTED active model, which reads VO2max and is the more accurate
-        // form the authors published: EE(kJ/min) = fitAlpha + fitHR·HR + fitVO2·VO2max + fitWeight·W
-        // + fitAge·A. Used only when a resting HR is known (so a Uth VO2max can be derived); otherwise
-        // the base workout* model above is used, unchanged. (Keytel et al. 2005, J. Sports Sci. 23(3).)
-        let fitHR: Double
-        let fitVO2: Double
-        let fitWeight: Double
-        let fitAge: Double
-        let fitAlpha: Double
-    }
-
-    static let male = Coeffs(restingAlpha: 88.362, restingWeight: 13.397, restingHeight: 479.9,
-                             restingAge: 5.677, workoutHR: 0.6309, workoutWeight: 0.1988,
-                             workoutAge: 0.2017, workoutAlpha: -55.0969,
-                             fitHR: 0.634, fitVO2: 0.404, fitWeight: 0.394, fitAge: 0.271,
-                             fitAlpha: -95.7735)
-    static let female = Coeffs(restingAlpha: 447.593, restingWeight: 9.247, restingHeight: 309.8,
-                               restingAge: 4.33, workoutHR: 0.4472, workoutWeight: -0.1263,
-                               workoutAge: 0.0740, workoutAlpha: -20.4022,
-                               fitHR: 0.450, fitVO2: 0.380, fitWeight: 0.103, fitAge: 0.274,
-                               fitAlpha: -59.3954)
-    // Nonbinary = the male/female midpoint, the same convention the base workout* coeffs use.
-    static let nonbinary = Coeffs(restingAlpha: 267.9775, restingWeight: 11.322, restingHeight: 394.85,
-                                  restingAge: 5.0035, workoutHR: 0.53905, workoutWeight: 0.03625,
-                                  workoutAge: 0.13785, workoutAlpha: -37.74955,
-                                  fitHR: 0.542, fitVO2: 0.392, fitWeight: 0.2485, fitAge: 0.2725,
-                                  fitAlpha: -77.58445)
-
-    static let activeHRRFraction = 0.30
-    /// Whole-day active gate (`estimateDayCalories` only). The Keytel 2005 equation is
-    /// validated for genuine EXERCISE HR; applying it to ordinary low-intensity daytime
-    /// HR (walking, stairs, standing — typically ~95–110 bpm) across the WHOLE day credits
-    /// the full gross-exercise rate to every elevated second and over-counts by ~1000+ kcal
-    /// (community "Calories too high"). The bout path keeps the 0.30 detector fraction —
-    /// Keytel is appropriate for a real detected/manual workout — but the day path raises
-    /// the gate to 50% HRR so the gross rate only applies at genuine exercise-level HR.
-    static let dayActiveHRRFraction = 0.50
-    /// Longest gap over which one daily HR reading may carry RESTING energy.
-    ///
-    /// Resting metabolism continues across a dropout, so a reading may carry the BMR rate into the gap
-    /// — but only so far, or a disconnected evening would bank a full night of resting kcal that was
-    /// never observed. ACTIVE energy is capped separately and much tighter, at the inferred cadence
-    /// (see `estimateDayEnergy`): a gap is evidence of a missing sensor, never of exercise.
-    static let dayMaxObservedGapS: Double = 60.0
-    static let dayMaxObservedSpanS: Double = 86_400.0
-    static let workoutDivisor = 251.04  // 60 s/min × 4.184 kJ/kcal
-
-    static func resolveCoeffs(_ sex: String) -> Coeffs {
-        switch sex.lowercased() {
-        case "male": return male
-        case "female": return female
-        case "nonbinary": return nonbinary
-        default: return nonbinary
-        }
-    }
-
-    static func restingKcalPerS(_ c: Coeffs, weightKg: Double, heightCm: Double, age: Double) -> Double {
-        let heightM = heightCm / 100.0
-        let bmr = c.restingAlpha + c.restingWeight * weightKg + c.restingHeight * heightM - c.restingAge * age
-        return max(0.0, bmr) / 86_400.0
-    }
-
-    /// Uth–Sørensen VO2max estimate (ml·kg⁻¹·min⁻¹) ≈ 15.3 · HRmax / HRrest. Returns nil when no
-    /// usable resting HR — the caller then keeps the base (fitness-blind) Keytel model, so a strap
-    /// with no resting baseline is scored exactly as before. A function of HRmax + resting HR ONLY,
-    /// so every call site resolves it locally and day derivation stays deterministic (no cross-day
-    /// dependency). (Uth et al. 2004, Eur. J. Appl. Physiol. 91.)
-    // `public`: the app-target IntelligenceEngine reads this shared Uth 2004 estimate for the waist-free
-    // VO₂max fallback (#1391), across the StrandAnalytics module boundary. The Kotlin twin is already public.
-    public static func vo2maxFor(hrmax: Double, restingHR: Double?) -> Double? {
-        guard let rhr = restingHR, rhr > 0, hrmax > 0 else { return nil }
-        return 15.3 * hrmax / rhr
-    }
-
-    /// Active energy rate (kcal/s). With `vo2max` present, uses the Keytel 2005 fitness-ADJUSTED
-    /// equation (personalizes beyond age/weight/sex); with nil, the base fitness-blind Keytel model,
-    /// byte-identical to before. HR is capped at HRmax in both, as the base model always did.
-    static func activeKcalPerS(_ c: Coeffs, hr: Double, hrmax: Double, weightKg: Double, age: Double,
-                               vo2max: Double? = nil) -> Double {
-        let eeKjMin: Double
-        if let vo2 = vo2max {
-            eeKjMin = c.fitHR * min(hr, hrmax) + c.fitVO2 * vo2 + c.fitWeight * weightKg
-                + c.fitAge * age + c.fitAlpha
-        } else {
-            eeKjMin = c.workoutHR * min(hr, hrmax) + c.workoutWeight * weightKg
-                + c.workoutAge * age + c.workoutAlpha
-        }
-        return max(0.0, eeKjMin) / workoutDivisor
-    }
-
-    /// Estimate (kcal, kJ) for a workout bout. Each sample is weighted by the ELAPSED time
-    /// to the next sample (capped at `WorkoutDetector.mergeGapS`), so a sparse, non-1 Hz
-    /// stream is counted over real seconds rather than undercounted as one second per sample.
-    ///
-    /// This elapsed-time weighting is justified ONLY for the bout path: a bout's intra-sample
-    /// gaps are motion-gated and ≤ mergeGapS (150 s) by construction, so each gap really is
-    /// continuous active/resting time. The whole-day estimator deliberately does NOT use it
-    /// (see `estimateDayCalories`) — its raw, non-gap-filled day HR union would otherwise
-    /// credit up to 150 s of active burn to a single isolated elevated sample.
-    public static func estimateBoutCalories(_ hrSamples: [HRSample],
-                                            profile: UserProfile,
-                                            hrmax: Double?,
-                                            restingHR: Double?) -> (Double, Double) {
-        let weightKg = profile.weightKg > 0 ? profile.weightKg : 70.0
-        let heightCm = profile.heightCm > 0 ? profile.heightCm : 170.0
-        let age = profile.age > 0 ? profile.age : 30.0
-        let coeffs = resolveCoeffs(profile.sex)
-
-        let effHRmax = hrmax ?? 220.0
-        let effResting = restingHR ?? 60.0
-        let activeThreshold = effResting + activeHRRFraction * (effHRmax - effResting)
-
-        let restingRate = restingKcalPerS(coeffs, weightKg: weightKg, heightCm: heightCm, age: age)
-        // Fitness anchor (Uth VO2max) when a resting HR is known → the Keytel fitness-adjusted rate;
-        // nil restingHR → base model, unchanged. Computed once (constant across the bout).
-        let vo2max = vo2maxFor(hrmax: effHRmax, restingHR: restingHR)
-
-        // Weight each sample by the ACTUAL elapsed time to the next sample, not a flat 1 s.
-        // restingRate / activeKcalPerS are per-SECOND rates, so summing one per sample only
-        // equals real energy when the stream is exactly 1 Hz. A sparse WHOOP 5/MG bout can
-        // run far below 1 sample/s, which previously undercounted energy roughly in proportion
-        // to the coverage gap (calories collapsing toward ~1 kcal, #137). Each interval is
-        // capped at mergeGapS (150 s) — the detector's own "still continuous, not resting"
-        // threshold — so a brief dropout is fully counted but a wear gap can't inflate one
-        // reading. At a steady 1 Hz every interval is ~1 s: behaviour is unchanged.
-        let ordered = hrSamples.sorted { $0.ts < $1.ts }
-        var totalKcal = 0.0
-        for i in ordered.indices {
-            let bpm = Double(ordered[i].bpm)
-            let dur: Double
-            if i < ordered.count - 1 {
-                let gap = Double(ordered[i + 1].ts - ordered[i].ts)
-                dur = gap > 0 ? min(gap, WorkoutDetector.mergeGapS) : 1.0
-            } else {
-                dur = 1.0   // last sample carries one representative second
-            }
-            if bpm < activeThreshold {
-                totalKcal += restingRate * dur
-            } else {
-                totalKcal += activeKcalPerS(coeffs, hr: bpm, hrmax: effHRmax, weightKg: weightKg, age: age, vo2max: vo2max) * dur
-            }
-        }
-        return (totalKcal, totalKcal * 4.184)
-    }
-
-    /// APPROXIMATE whole-day resting + active energy estimate from the full day's HR samples.
-    /// Resting BMR is integrated once over capped, supported sample intervals, independent of HR cadence.
-    /// Supported high-HR intervals then add only the Keytel energy ABOVE that resting floor.
-    ///
-    /// The day path uses `dayActiveHRRFraction` (50% HRR), NOT the 30% the bout detector uses
-    /// (`activeHRRFraction`). The Keytel 2005 equation is validated for genuine EXERCISE HR;
-    /// at 30% the gate falls to ~94 bpm for a typical user, so ordinary low-intensity daytime
-    /// HR (walking, stairs, standing) credited the full gross-exercise rate across the whole
-    /// day and over-counted by ~1000+ kcal (community "Calories too high"). The 50% gate keeps
-    /// the gross rate for genuine exercise-level HR only; the bout path is UNCHANGED — Keytel
-    /// is appropriate there, on a real detected/manual workout.
-    ///
-    /// Cadence is inferred from the median positive timestamp gap and capped at
-    /// `dayMaxObservedGapS`. Each sample carries resting energy, and a high-HR sample carries active
-    /// energy, to the next sample for at most that cap. This can credit up to 60 s instead of the old
-    /// flat 1 s for a reading on a gappy day, but never a whole disconnect. Thus a 30 s sparse stream
-    /// and a 1 Hz stream covering the same activity produce comparable energy.
-    ///
-    /// This is an on-device estimate from heart rate alone — NOT laboratory calorimetry, NOT
-    /// Apple/WHOOP cloud parity, NOT medical advice.
-    public static func estimateDayEnergy(_ hrSamples: [HRSample],
-                                         profile: UserProfile,
-                                         hrmax: Double?,
-                                         restingHR: Double?) -> DayEnergyEstimate {
-        if hrSamples.isEmpty {
-            return DayEnergyEstimate(restingKcal: 0, activeKcal: 0, observedSeconds: 0)
-        }
-
-        let weightKg = profile.weightKg > 0 ? profile.weightKg : 70.0
-        let heightCm = profile.heightCm > 0 ? profile.heightCm : 170.0
-        let age = profile.age > 0 ? profile.age : 30.0
-        let coeffs = resolveCoeffs(profile.sex)
-
-        let effHRmax = hrmax ?? 220.0
-        let effResting = restingHR ?? 60.0
-        // Day-path gate is HIGHER than the bout detector's: only genuine exercise-level HR
-        // gets the Keytel gross rate (see `dayActiveHRRFraction`).
-        let activeThreshold = effResting + dayActiveHRRFraction * (effHRmax - effResting)
-
-        let restingRate = restingKcalPerS(coeffs, weightKg: weightKg, heightCm: heightCm, age: age)
-        // Fitness anchor (Uth VO2max) when a resting HR is known → Keytel fitness-adjusted rate; nil
-        // restingHR → base model, unchanged. Constant across the day.
-        let vo2max = vo2maxFor(hrmax: effHRmax, restingHR: restingHR)
-
-        // Ties are REACHABLE: hrSample is keyed (deviceId, ts) and the day feed unions devices, so a
-        // two-strap day carries two readings for the same second. Only the LAST of a tied run gets the
-        // interval (the earlier ones measure a zero gap), so tie order decides the day's active energy.
-        // Ordering ties by DESCENDING bpm hands the interval to the LOWER reading — the conservative
-        // direction for a path whose history is over-counting. Sorting on ts alone left this to the
-        // sort's stability, which Kotlin guarantees (TimSort) and Swift explicitly does not.
-        let ordered = hrSamples.sorted { $0.ts != $1.ts ? $0.ts < $1.ts : $0.bpm > $1.bpm }
-        let positiveGaps = zip(ordered, ordered.dropFirst())
-            .map { pair in Double(pair.1.ts - pair.0.ts) }
-            .filter { $0 > 0 }
-            .sorted()
-        let nominalSampleS: Double = {
-            guard !positiveGaps.isEmpty else { return 1.0 }
-            let mid = positiveGaps.count / 2
-            let median = positiveGaps.count.isMultiple(of: 2)
-                ? (positiveGaps[mid - 1] + positiveGaps[mid]) / 2.0
-                : positiveGaps[mid]
-            return min(median, dayMaxObservedGapS)
-        }()
-        let observedSeconds = min(dayMaxObservedSpanS, positiveGaps.reduce(nominalSampleS) {
-            $0 + min($1, dayMaxObservedGapS)
-        })
-        let restingKcal = restingRate * observedSeconds
-
-        var activeKcal = 0.0
-        for i in ordered.indices {
-            let durationS: Double
-            // Active carry is capped at the INFERRED CADENCE, not at the wider resting cap. A 30 s
-            // stream still carries its full 30 s (the cadence bug this fixes), and a 1 Hz day carries
-            // 1 s so the legacy total is reproduced exactly — but a dropout in an otherwise dense day
-            // no longer credits a full minute of exercise to the last reading before it. That was the
-            // objection the flat one-second model was written to avoid, and capping active at the
-            // cadence answers it rather than narrowing it from 150 s to 60 s.
-            if i < ordered.count - 1 {
-                let gap = Double(ordered[i + 1].ts - ordered[i].ts)
-                durationS = gap > 0 ? min(gap, nominalSampleS) : 0.0
-            } else {
-                durationS = nominalSampleS
-            }
-            let bpm = Double(ordered[i].bpm)
-            guard bpm >= activeThreshold else { continue }
-            let grossRate = activeKcalPerS(coeffs, hr: bpm, hrmax: effHRmax,
-                                           weightKg: weightKg, age: age, vo2max: vo2max)
-            activeKcal += max(0.0, grossRate - restingRate) * durationS
-        }
-        return DayEnergyEstimate(restingKcal: restingKcal, activeKcal: activeKcal,
-                                 observedSeconds: observedSeconds)
-    }
-
-    /// Backward-compatible total-kcal facade for the stored daily metric.
-    public static func estimateDayCalories(_ hrSamples: [HRSample],
-                                           profile: UserProfile,
-                                           hrmax: Double?,
-                                           restingHR: Double?) -> Double {
-        estimateDayEnergy(hrSamples, profile: profile, hrmax: hrmax,
-                          restingHR: restingHR).totalKcal
     }
 }

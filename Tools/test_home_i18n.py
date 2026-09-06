@@ -96,7 +96,7 @@ ANDROID_INDIRECT_NON_UI_LITERALS = {
     "today.keyMetricsWindowDays", ",",
     # Stable DashboardCard raw values + preference; units remain measurement metadata.
     "stress", "fitnessAge", "vo2max", "vitality", "skinTemp", "sleep", "hydration", "coupled",
-    "coach",
+    "coach", "totalEnergy",
     "today.dashboardCards", "yrs", "kcal", "",
 }
 
@@ -127,6 +127,8 @@ ANDROID_HELPER_NON_UI_LITERALS = {
     # TodayProvenance source ids and metric dictionary keys.
     "-noop", "recovery", "strain", "sleep_performance", "oura-import", "oura-api",
     "fitbit-import", "garmin-import", "xiaomi-band",
+    # The screen's and the merge's two spellings of respiratory rate, both arbitration keys.
+    "resp", "resp_rate",
 }
 
 # AppRoot's Home-owned shell strings are resource-backed: the visible Today bottom-tab

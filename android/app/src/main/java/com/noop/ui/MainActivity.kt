@@ -1340,6 +1340,21 @@ object NoopPrefs {
         of(context).edit().putBoolean(KEY_EFFORT_RESCORE_DONE, true).apply()
     }
 
+    /**
+     * Whether the one-shot full-history calorie rescore has run.
+     *
+     * The key carries a version, so a future change of basis gets its own pass rather than being
+     * blocked by this one having completed.
+     */
+    const val KEY_CALORIE_BASIS_RESCORE_DONE = "noop.calorieBasisRescore.active.done"
+
+    fun calorieBasisRescoreDone(context: Context): Boolean =
+        of(context).getBoolean(KEY_CALORIE_BASIS_RESCORE_DONE, false)
+
+    fun setCalorieBasisRescoreDone(context: Context) {
+        of(context).edit().putBoolean(KEY_CALORIE_BASIS_RESCORE_DONE, true).apply()
+    }
+
     /** Whether the one-shot #547 implausible-timestamp heal has run. Set true once it completes so the
      *  on-upgrade purge of bad-strap-clock rows (far-past / future-dated) never re-runs. Re-running is
      *  harmless (the deletes are idempotent), but the flag avoids the work on every launch. */

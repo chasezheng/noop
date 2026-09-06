@@ -29,7 +29,19 @@ public enum Vo2MaxEstimator: String, Codable, Sendable {
     case nes
     case uth
 
+    /// A value the wearer measured and entered, which outranks either estimator.
+    ///
+    /// Present even though no Apple surface writes one: the raw value is a persisted string that
+    /// crosses platforms, and a case missing on one side decodes to nil there, silently dropping the
+    /// attribution on every restore. Twin of Kotlin `MEASURED`.
+    case measured
+
     public static func forWaistCm(_ waistCm: Double) -> Self { waistCm > 0 ? .nes : .uth }
+
+    /// The method a point was produced by, given the profile that produced it.
+    public static func forProfile(waistCm: Double, vo2maxOverride: Double) -> Self {
+        vo2maxOverride > 0 ? .measured : forWaistCm(waistCm)
+    }
 }
 
 extension WhoopStore {

@@ -54,11 +54,11 @@ import kotlin.reflect.KClass
  *   - Daily "Apple-style" aggregates (steps / calories / VO2max / weight / avg-HR)
  *     -> [AppleDaily] under deviceId "apple-health".
  *   - WHOOP-style autonomic markers (resting-HR / HRV / sleep-minutes / SpO2 / respiration)
- *     -> [DailyMetric] under deviceId "my-whoop", BUT only for days the strap does NOT already
- *     cover — where "cover" means either a raw "my-whoop" daily row OR a computed "my-whoop-noop"
- *     row (the derived recovery/strain/sleep source). Strap data is richer (recovery/strain/
- *     stages), so we never clobber it — we only backfill days the strap left empty. A strap-only
- *     user has NO raw "my-whoop" rows, so the computed source is what marks their days as owned.
+ *     -> [DailyMetric] under deviceId "health-connect", for every day Health Connect carries one.
+ *     Its own source id means it shares no primary key with the strap's row and cannot displace it,
+ *     so nothing is dropped at write time and the read side arbitrates instead.
+ *   - Sleep sessions keep the covered-days gate below: they are keyed by start timestamp rather than
+ *     by day, and overlapping nights need interval reconciliation rather than day arbitration.
  *   - Exercise sessions -> [WorkoutRow] with source "health-connect".
  *
  * The UI requests only the selected categories before [import] is called. Partial grants are valid:
@@ -79,8 +79,7 @@ object HealthConnectImporter {
     private const val WHOOP_COMPUTED = "$WHOOP-noop"
     // Health Connect data is stored under its OWN source ("health-connect"), NOT the shared
     // "apple-health" bucket — otherwise it's mis-attributed to Apple Health in the UI (issue #34).
-    // (The recovery/sleep backfill still lands under "my-whoop"; only the external-health aggregates
-    // + workouts carry this source.)
+    // Every table this importer writes carries it, the daily vitals row included.
     private const val HC_DEVICE = "health-connect"
     private const val HC_WORKOUT_SOURCE = "health-connect"
 
@@ -740,8 +739,10 @@ object HealthConnectImporter {
             )
         }
 
-        // Days the strap already covers: read ONCE so we never clobber richer strap data. This is
-        // the UNION across EVERY strap-native source id — the canonical raw "my-whoop" + computed
+        // Days the strap already covers, read only by the sleep-session write below. A session is
+        // keyed by start timestamp under the strap source, where an overlapping night needs interval
+        // reconciliation rather than day-keyed arbitration, so the gate stays until that exists.
+        // This is the UNION across EVERY strap-native source id — the canonical raw "my-whoop" + computed
         // "my-whoop-noop" pair AND any actively paired strap's "whoop-<mac>" / "whoop-<mac>-noop"
         // rows (#112 follow-up: the gate previously knew only the canonical pair, so a re-paired
         // strap's fresh nights were invisible to it and the sparse HC backfill shadowed them). The
@@ -807,9 +808,11 @@ object HealthConnectImporter {
             a.bodyFatPct?.let { metricSeriesRows += MetricSeriesRow(HC_DEVICE, day, "body_fat", round2(it)) }
             a.leanMassKg?.let { metricSeriesRows += MetricSeriesRow(HC_DEVICE, day, "lean_mass", round2(it)) }
 
-            // DailyMetric (my-whoop): resting-HR / HRV / sleep-minutes / SpO2 / respiration,
-            // ONLY for days the strap does not already cover (raw OR computed).
-            if (day !in coveredDays) {
+            // Resting HR, HRV, sleep minutes, SpO2 and respiration, for every day Health Connect
+            // carries one. No covered-days gate: the row shares no primary key with the strap's, so it
+            // cannot displace strap data, and dropping it here would hide every reading taken while
+            // the strap was paired elsewhere.
+            run {
                 val rhr = if (a.rhrCount > 0) round(a.rhrSum.toDouble() / a.rhrCount).toInt() else null
                 val hrv = if (a.hrvCount > 0) round1(a.hrvSum / a.hrvCount) else null
                 val sleep = if (a.hasSleep) round1(a.sleepMin) else null
@@ -821,7 +824,7 @@ object HealthConnectImporter {
                 if (hasMetric) {
                     dailyRows.add(
                         DailyMetric(
-                            deviceId = WHOOP,
+                            deviceId = HC_DEVICE,
                             day = day,
                             totalSleepMin = sleep,
                             restingHr = rhr,
@@ -845,7 +848,7 @@ object HealthConnectImporter {
             }
             if (metricSeriesRows.isNotEmpty()) repo.upsertMetricSeries(metricSeriesRows)
             if (dailyRows.isNotEmpty()) {
-                repo.upsertDevice(WHOOP, name = "WHOOP")
+                repo.upsertDevice(HC_DEVICE, name = "Health Connect")
                 repo.upsertDailyMetrics(dailyRows)
             }
             // #983: write the collected sleep sessions under WHOOP, but ONLY for days the strap does not

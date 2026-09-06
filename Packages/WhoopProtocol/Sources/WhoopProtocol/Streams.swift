@@ -314,8 +314,8 @@ public struct RespSample: Equatable, Codable {
 /// as soon as an offload is acked, so every second of it was lost permanently.
 ///
 /// Optional: nil on WHOOP 4.0 (whose v24/v25 layouts have no such field), on any record whose f32 fell
-/// outside the decoder's `[0, 8] g` gate, and on every row banked before this column existed. Nothing
-/// scores it — see the #520 `DynAccelDiag` summary for the observability half. Mirrors Android `GravityRow`.
+/// outside the decoder's `[0, 8] g` gate, and on every row banked before this column existed. No
+/// sleep, recovery or strain score reads it. Mirrors Android `GravityRow`.
 public struct GravitySample: Equatable, Codable {
     public let ts: Int
     public let x: Double

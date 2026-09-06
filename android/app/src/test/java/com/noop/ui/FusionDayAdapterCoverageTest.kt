@@ -18,23 +18,29 @@ import java.lang.reflect.Proxy
  * must read each source's OWN row keyed to the exact requested day, so an import for day A never supplies a
  * value for day B; and an active band stored under its own id must fuse ITS data, not the WHOOP id's.
  *
- * Mirrors the iOS regression test logic. Driven through a Proxy-stub [WhoopDao] (no Room): the only DAO
- * method [FusionDayAdapter] touches is `days(deviceId)`, which we answer per device id from a fixture map.
+ * Mirrors the iOS test. Driven through a stub data-access object: the only method the adapter touches
+ * is the day-scoped range read, answered per device id from a fixture map. That read being day-scoped
+ * is what stops the adapter pulling a whole history to render one record.
  */
 class FusionDayAdapterCoverageTest {
 
-    /** Build a repository whose `days(deviceId)` returns the fixture rows for that id (else empty), and
-     *  whose every OTHER dao call throws (proof the adapter touches nothing else). */
+    /** Build a repository whose day-scoped range read returns the fixture rows for that id and day range
+     *  (else empty), and whose every OTHER dao call throws (proof the adapter touches nothing else). */
     private fun repo(rowsByDevice: Map<String, List<DailyMetric>>): WhoopRepository {
         val dao = Proxy.newProxyInstance(
             WhoopDao::class.java.classLoader,
             arrayOf(WhoopDao::class.java),
         ) { _, method, args ->
             when (method.name) {
-                // The ONLY DAO method FusionDayAdapter touches (via repo.days). args[0] is the deviceId;
-                // a trailing Continuation (suspend ABI) is ignored. Returning the list synchronously is the
-                // supported way to stub a suspend fun through a Java Proxy.
-                "days" -> rowsByDevice[args?.get(0) as String].orEmpty()
+                // The ONLY DAO method FusionDayAdapter touches (via repo.dailyMetrics): a DAY-SCOPED range
+                // read, args = (deviceId, from, to). A trailing Continuation (suspend ABI) is ignored.
+                // Returning the list synchronously is the supported way to stub a suspend fun through a
+                // Java Proxy. Filtering here is what proves the adapter asks for one day, not the history.
+                "dailyMetricsRange" -> {
+                    val from = args!![1] as String
+                    val to = args[2] as String
+                    rowsByDevice[args[0] as String].orEmpty().filter { it.day in from..to }
+                }
                 // Anything else proves the adapter reached past its contract.
                 else -> throw UnsupportedOperationException("FusionDayAdapter must not call ${method.name}")
             }

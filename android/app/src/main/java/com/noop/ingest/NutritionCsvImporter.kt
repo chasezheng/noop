@@ -2,6 +2,7 @@ package com.noop.ingest
 
 import android.content.Context
 import android.net.Uri
+import com.noop.analytics.calorie.Calories
 import com.noop.data.ImportSummary
 import com.noop.data.MetricSeriesRow
 import com.noop.data.WhoopRepository

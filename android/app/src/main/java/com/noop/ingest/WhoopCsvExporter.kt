@@ -351,7 +351,10 @@ object WhoopCsvExporter {
         // internally); a day present under ANY imported source is "import", otherwise it came from
         // the on-device computed source.
         val daily = repo.daysMerged(deviceId)
-        val importedDays = importedIds.flatMap { repo.days(it) }.map { it.day }.toHashSet()
+        // Health Connect's daily rows carry their own source id, so they are named here or an
+        // imported day is exported as an on-device approximation it never was.
+        val importedDays = (importedIds + WhoopRepository.HEALTH_CONNECT_SOURCE)
+            .flatMap { repo.days(it) }.map { it.day }.toHashSet()
         val sourceByDay = daily.associate { d ->
             d.day to if (d.day in importedDays) "import" else "noop (APPROXIMATE)"
         }

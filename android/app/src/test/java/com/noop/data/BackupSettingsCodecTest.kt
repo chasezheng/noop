@@ -39,6 +39,7 @@ class BackupSettingsCodecTest {
             "units.system" to "imperial",
             "units.distance" to "metric",
             "units.temperature" to "celsius",
+            "units.skinTempDisplay" to "deviation",
             "effort.scale" to "whoop",
             "dayCycle.mode" to "sleep_onset",
             // #today-hosted-cards: the one layout pref carried, a JSON [String] stored under the String kind.
@@ -46,6 +47,42 @@ class BackupSettingsCodecTest {
             // #1361: custom journal behaviours, a newline-joined name list — the embedded newline must
             // survive the JSON round-trip (and stay byte-identical to the Apple value).
             "journal.customBehaviors" to "Cold plunge\nMagnesium",
+            // The wearer's own body measurement and the calorie knobs behind their day totals. The two
+            // Bool knobs ride the Int kind — the wire has no boolean.
+            "profile.vo2max" to 47.5,
+            "calorie.model" to "hybrid",
+            "calorie.preferOnDevice" to 1,
+            "calorie.dayActiveHRRFraction" to 0.4,
+            "calorie.boutActiveHRRFraction" to 0.3,
+            "calorie.activeAccrualMET" to 1.6,
+            "calorie.dynAccelMETGainPerG" to 28.0,
+            "calorie.hrFallbackWhenNoMET" to 0,
+            // Every field of the measured-basal model, each moved off its default so a key that
+            // stopped crossing the wire cannot pass by coincidence.
+            "calorie.sessionGapS" to 900,
+            "calorie.minHrCoverageFrac" to 0.6,
+            "calorie.hampelRadiusS" to 7,
+            "calorie.hampelSigmas" to 2.5,
+            "calorie.suppressPeaks" to 0,
+            "calorie.peakBlockS" to 240,
+            "calorie.peakPercentile" to 0.93,
+            "calorie.motionStillG" to 0.015,
+            "calorie.motionSmoothS" to 12,
+            "calorie.basalMinWindowS" to 420,
+            "calorie.basalHrRangeBpm" to 8.0,
+            "calorie.basalStillFrac" to 0.95,
+            "calorie.basalBeatCoverageFrac" to 0.4,
+            "calorie.restSmoothS" to 45,
+            "calorie.restSmoothMinSamples" to 25,
+            "calorie.basalHrSeedOffsetBpm" to 4.0,
+            "calorie.reserveRampBandBpm" to 12.0,
+            "calorie.measuredBasalKcalDay" to 1577.0,
+            "calorie.basalFatNight" to 0.75,
+            "calorie.basalFatDay" to 0.35,
+            "calorie.basalFatDayStartHour" to 9.0,
+            "calorie.basalFatDayEndHour" to 21.0,
+            "calorie.activeFatAtZone1" to 0.95,
+            "calorie.activeFatAtZone2Top" to 0.6,
         )
         val json = requireNotNull(BackupSettingsCodec.encode(values))
         val back = BackupSettingsCodec.decode(json)
@@ -60,11 +97,46 @@ class BackupSettingsCodecTest {
         assertEquals("imperial", back["units.system"])
         assertEquals("metric", back["units.distance"])
         assertEquals("celsius", back["units.temperature"])
+        assertEquals("deviation", back["units.skinTempDisplay"])
         assertEquals("whoop", back["effort.scale"])
         assertEquals("sleep_onset", back["dayCycle.mode"])
         assertEquals("[\"sleep.sleepMarks\"]", back["today.hostedCards"])
         assertEquals("Cold plunge\nMagnesium", back["journal.customBehaviors"])
+        assertEquals(47.5, back["profile.vo2max"])
+        assertEquals("hybrid", back["calorie.model"])
+        assertEquals(1, back["calorie.preferOnDevice"])
+        assertEquals(0.4, back["calorie.dayActiveHRRFraction"])
+        assertEquals(0.3, back["calorie.boutActiveHRRFraction"])
+        assertEquals(1.6, back["calorie.activeAccrualMET"])
+        assertEquals(28.0, back["calorie.dynAccelMETGainPerG"])
+        assertEquals(0, back["calorie.hrFallbackWhenNoMET"])
+        assertEquals(900, back["calorie.sessionGapS"])
+        assertEquals(0.6, back["calorie.minHrCoverageFrac"])
+        assertEquals(7, back["calorie.hampelRadiusS"])
+        assertEquals(2.5, back["calorie.hampelSigmas"])
+        assertEquals(0, back["calorie.suppressPeaks"])
+        assertEquals(240, back["calorie.peakBlockS"])
+        assertEquals(0.93, back["calorie.peakPercentile"])
+        assertEquals(0.015, back["calorie.motionStillG"])
+        assertEquals(12, back["calorie.motionSmoothS"])
+        assertEquals(420, back["calorie.basalMinWindowS"])
+        assertEquals(8.0, back["calorie.basalHrRangeBpm"])
+        assertEquals(0.95, back["calorie.basalStillFrac"])
+        assertEquals(0.4, back["calorie.basalBeatCoverageFrac"])
+        assertEquals(45, back["calorie.restSmoothS"])
+        assertEquals(25, back["calorie.restSmoothMinSamples"])
+        assertEquals(4.0, back["calorie.basalHrSeedOffsetBpm"])
+        assertEquals(12.0, back["calorie.reserveRampBandBpm"])
+        assertEquals(1577.0, back["calorie.measuredBasalKcalDay"])
+        assertEquals(0.75, back["calorie.basalFatNight"])
+        assertEquals(0.35, back["calorie.basalFatDay"])
+        assertEquals(9.0, back["calorie.basalFatDayStartHour"])
+        assertEquals(21.0, back["calorie.basalFatDayEndHour"])
+        assertEquals(0.95, back["calorie.activeFatAtZone1"])
+        assertEquals(0.6, back["calorie.activeFatAtZone2Top"])
         assertEquals(values.size, back.size)
+        assertEquals("every whitelisted key must be exercised here",
+                     BackupSettingsCodec.WHITELIST.size, values.size)
     }
 
     @Test fun crossPlatformShapedJsonDecodes() {

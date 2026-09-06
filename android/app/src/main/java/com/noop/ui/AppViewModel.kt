@@ -12,6 +12,7 @@ import com.noop.alarm.WindDownStore
 import com.noop.analytics.Baselines
 import com.noop.analytics.IllnessSignalEngine
 import com.noop.analytics.IllnessWatch
+import com.noop.analytics.CalorieBasisRescore
 import com.noop.analytics.IntelligenceEngine
 import com.noop.analytics.DayCycleIntelligenceIntegration
 import com.noop.analytics.CircadianEngine
@@ -22,10 +23,10 @@ import com.noop.analytics.RouteMath
 import com.noop.analytics.SleepMark
 import com.noop.analytics.SleepMarkType
 import com.noop.analytics.Sport
-import com.noop.analytics.Calories
 import com.noop.analytics.StrainScorer
 import com.noop.analytics.UserProfile
 import com.noop.analytics.WorkoutSport
+import com.noop.analytics.calorie.Calories
 import com.noop.location.GpsSession
 import kotlinx.coroutines.Job
 import com.noop.ble.HrBroadcaster
@@ -737,18 +738,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var todayVo2maxCache: Double? = null
 
     /**
+     * The one bounded merge every recent-days surface reads.
+     *
+     * Each source is capped to its most recent days, so the merge stays bounded on a years-deep
+     * history while every surface keeps the range it draws. Shared through one [stateIn], so a second
+     * reader does not re-run it.
+     */
+    private val recentMergedSeries: StateFlow<com.noop.data.MergedDailySeries> =
+        repository.recentDaysMergedSeriesFlow(deviceId)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), com.noop.data.MergedDailySeries.EMPTY)
+
+    /**
      * Recent daily metrics (newest last), backing the Today grid + illness watch.
      * MERGED: imported "my-whoop" rows win per day; on-device computed "my-whoop-noop"
      * rows (from [IntelligenceEngine]) gap-fill, so recovery/strain/sleep populate from
-     * the strap with no WHOOP import.
+     * the strap with no WHOOP import. Same oldest-first ordering as before.
      */
     val recentDays: StateFlow<List<DailyMetric>> =
-        // #797: bound the dashboard merge window. The unbounded daysMergedFlow re-merged the WHOLE daily
-        // history on every DB change; a years-deep import made that a heavy refresh feeding Today / Trends /
-        // illness watch. recentDaysMergedFlow caps each source to RECENT_DAYS_CAP most-recent days first, so
-        // the merge stays bounded while every current surface (deepest Trends range, 7-day Fitness Age /
-        // Vitality windows) keeps its data. Same oldest-first ordering as before.
-        repository.recentDaysMergedFlow(deviceId)
+        recentMergedSeries.map { it.rows }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /**
@@ -777,6 +784,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         .flowOn(Dispatchers.IO)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * The per-day, per-metric winner of the vitals arbitration behind [recentDays], as
+     * `day -> resolver key -> source`, with an entry only where another source won the field.
+     *
+     * A merged [DailyMetric] carries one deviceId, so a value supplied into a strap-owned row would
+     * otherwise be labelled as the strap's. A miss leaves the row's deviceId, which is still right
+     * for every field the row kept.
+     */
+    val healthConnectVitalSources: StateFlow<Map<String, Map<String, com.noop.analytics.FusionSource>>> =
+        recentMergedSeries.map { it.vitalSources }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     /**
      * #103: SpO₂ candidate @82 nightly mean per day, loaded from the "spo2_candidate" metricSeries
@@ -1138,6 +1157,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     ownerSource = RegistryDayOwnerSource(noopApp.deviceRegistry),
                 )
             }.onFailure { if (it is kotlin.coroutines.cancellation.CancellationException) throw it }
+            // Rows an older build wrote hold a different quantity under the same column, so they are
+            // recomputed from raw. Flag-guarded, so this is a no-op on later launches.
+            runCatching {
+                CalorieBasisRescore.runIfNeeded(
+                    repo = repository,
+                    profile = currentProfile(),
+                    importedDeviceId = deviceId,
+                    maxHROverride = profileStore.hrMaxOverride.takeIf { it > 0 }?.toDouble(),
+                    flagGet = { NoopPrefs.calorieBasisRescoreDone(appContext) },
+                    flagSet = { NoopPrefs.setCalorieBasisRescoreDone(appContext) },
+                    ownerSource = RegistryDayOwnerSource(noopApp.deviceRegistry),
+                )
+            }.onFailure { if (it is kotlin.coroutines.cancellation.CancellationException) throw it }
             while (isActive) {
                 // #547 RE-POLLUTION: a sync since the last tick may have flagged a re-heal (its ingest gate
                 // dropped bad-clock records). Re-run the purge BEFORE this tick's rescore so the affected days
@@ -1448,6 +1480,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Snapshot the user's body profile from SharedPreferences as an analytics [UserProfile]. */
     private fun currentProfile(): UserProfile = profileStore.toUserProfile()
+
+    /**
+     * Whether to show NOOP's own estimate even on days a phone also reports one.
+     *
+     * Exposed here rather than read from the store at each call site, so no two surfaces can resolve
+     * the same day differently.
+     */
+    fun caloriePreferOnDevice(): Boolean = profileStore.caloriePreferOnDevice
 
     // MARK: - HR smoothing (median filter)
 
@@ -1906,7 +1946,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * a failure here just leaves the loop to catch up; never throws into the edit caller. CancellationException
      * is rethrown so a ViewModel teardown mid-edit isn't swallowed (matches the loop's #125 handling).
      */
-    private suspend fun rescoreAfterEdit() {
+    private suspend fun rescoreAfterEdit(maxDays: Int = IntelligenceEngine.DEFAULT_RECENT_DAYS) {
         runCatching {
             // #1816: set the motion sink before the pass, clear it after (same pattern as the 15-min loop).
             IntelligenceEngine.stepsHasMotionSink = { hasMotion ->
@@ -1915,6 +1955,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             IntelligenceEngine.analyzeRecent(
                 repo = repository,
                 profile = currentProfile(),
+                maxDays = maxDays,
                 importedDeviceId = deviceId,
                 maxHROverride = profileStore.hrMaxOverride
                     .takeIf { it > 0 }?.toDouble(),
@@ -2803,6 +2844,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { rescoreAfterEdit() }
     }
 
+    /**
+     * Re-score the recent window after a calorie setting changes.
+     *
+     * A calorie setting changes the stored energy of every day it is scored over, so the dashboard
+     * would otherwise show numbers the settings no longer describe. Called on dismiss rather than per
+     * edit: a slider drag would start a full pass per frame.
+     *
+     * The window is [CALORIE_RESCORE_DAYS] rather than the usual recent one, so no surface is left
+     * showing two tunings side by side.
+     */
+    fun rescoreAfterCalorieSettingsChanged() {
+        viewModelScope.launch { rescoreAfterEdit(maxDays = CALORIE_RESCORE_DAYS) }
+    }
+
     /** #1545: the Effort TRIMP recipe changes stored Effort for EVERY day in the window, so re-score on
      *  the flip rather than leaving the user on the old recipe's numbers until the next analyze tick —
      *  which the toggle's own copy promises. Twin of the iOS onChange handler. */
@@ -3100,6 +3155,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
+        /** The span a calorie-setting edit re-scores: the deepest window any calorie surface draws. */
+        const val CALORIE_RESCORE_DAYS: Int = 91
+
         /** Grace before the first scoring pass, letting the first BLE offload land. */
         const val FIRST_OFFLOAD_GRACE_MS = 6_000L
         /**

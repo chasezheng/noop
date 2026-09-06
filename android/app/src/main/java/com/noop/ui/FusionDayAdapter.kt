@@ -16,7 +16,8 @@ import com.noop.data.WhoopRepository
  *
  * Lives in the `ui` package (which already depends on `analytics`) so the engine layer stays UI-free:
  * the [FusedRecord]/[FusedRow] read-models are the screen's, the arbitration is all in [FusionResolver] /
- * MetricArbitrationPolicy. The only I/O is the per-source daily reads through [WhoopRepository.days].
+ * MetricArbitrationPolicy. The only I/O is the per-source day-scoped reads through
+ * [WhoopRepository.dailyMetrics].
  * Wellness-only , it picks the best-sourced number and names where each came from; never judges a value.
  */
 object FusionDayAdapter {
@@ -29,6 +30,9 @@ object FusionDayAdapter {
         MetricSpec("hrv", "HRV"),
         MetricSpec("skin_temp", "Skin temperature"),
         MetricSpec("spo2", "Blood O₂"),
+        // resp_rate has no MetricKind of its own, so it tiers through OTHER — which already orders
+        // strap import (0) above NOOP-computed (1) above phone aggregate (2), the order this metric wants.
+        MetricSpec("resp_rate", "Respiratory rate"),
         MetricSpec("steps", "Steps"),
         MetricSpec("active_kcal", "Active energy"),
         MetricSpec("sleep_total_min", "Asleep time"),
@@ -74,20 +78,22 @@ object FusionDayAdapter {
     ): FusedRecord {
         // One row per source for the requested day (or null when that source has nothing that day).
         //
-        // #799: a source contributes ONLY the day it ACTUALLY covers. `firstOrNull { it.day == day }`
-        // matches the source's OWN row keyed to this exact day (each daily row is keyed by its own local
-        // day at write time), so a single imported sleep row can never supply a value for a day it doesn't
-        // cover (the "fused 8h57m every day" symptom). `repo.days(id)` is bounded per source and a missing
+        // #799: a source contributes ONLY the day it ACTUALLY covers — the read is keyed to this exact day
+        // (each daily row is keyed by its own local day at write time), so a single imported sleep row can
+        // never supply a value for a day it doesn't cover (the "fused 8h57m every day" symptom). A missing
         // day is a clean null, dropping that source out of every metric for the day rather than carrying a
-        // stale value forward. (firstOrNull over lastOrNull: day keys are unique per (deviceId, day) PK, so
-        // either is the same single row; firstOrNull is the cheaper short-circuit.)
+        // stale value forward.
+        //
+        // #797: the read is DAY-SCOPED (an indexed single-day range) rather than the whole history filtered
+        // down to one day — a years-deep import once cost one full-history read PER SOURCE to render one
+        // record.
         val perSource: List<Pair<FusionSource, DailyMetric?>> = sourceIds(activeStrapId).map { (source, ids) ->
             // HIGH-2 union: a source may span MORE THAN ONE id (active strap ∪ canonical "my-whoop"). The ids
             // are active-FIRST, so `firstNotNullOfOrNull` takes the active (live/measured) row for the day and
             // only falls back to the canonical (imported) row when the active id doesn't cover it, so the import
             // is no longer orphaned after a re-add, and a single-id source is the same single read as before.
             val row = ids.firstNotNullOfOrNull { id ->
-                runCatching { repo.days(id) }.getOrDefault(emptyList()).firstOrNull { it.day == day }
+                runCatching { repo.dailyMetrics(id, day, day) }.getOrDefault(emptyList()).firstOrNull()
             }
             source to row
         }

@@ -47,6 +47,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.noop.analytics.Baselines
 import com.noop.analytics.ReadinessEngine
 import com.noop.analytics.RestScorer
+import com.noop.analytics.calorie.Calories
 import com.noop.data.DailyMetric
 import com.noop.data.SleepSession
 import java.text.SimpleDateFormat
@@ -90,6 +91,20 @@ fun CoupledScreen(
 ) {
     val today by vm.today.collectAsStateWithLifecycle()
     val days by vm.recentDays.collectAsStateWithLifecycle()
+
+    // #614: the Workouts stat must match the Workouts screen, not DailyMetric.exerciseCount (which counts
+    // only strap-DETECTED bouts — a Health-Connect import with auto-detect off read as 0 while the Workouts
+    // screen showed it). vm.workouts is the SAME deduped, dismissed-filtered, all-source list the Workouts
+    // screen renders; loadWorkouts() isn't triggered by opening Coupled, so kick it here (idempotent,
+    // mirrors InsightsScreen).
+    LaunchedEffect(Unit) { vm.loadWorkouts() }
+    val allWorkouts by vm.workouts.collectAsStateWithLifecycle()
+
+    // Resolved rather than read off the row, so this cannot name the same day differently from the
+    // card it sits beside. Re-keyed on the preference, which changes no stored row.
+    val preferOnDeviceCalories = vm.caloriePreferOnDevice()
+    var caloriesByDay by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
+    LaunchedEffect(days, preferOnDeviceCalories) { caloriesByDay = activeCaloriesByDay(vm) }
 
     // Last night's sleep sessions (imported + computed-only), the SAME resolution SleepScreen uses, keyed on
     // `days` so a sync/import reloads. Only needed for the bed-wake span footnote.
@@ -224,8 +239,8 @@ fun CoupledScreen(
         StrainCard(
             dayStrain21 = dayStrain21,
             recovery = recovery,
-            calories = todayRow?.activeKcalEst,
-            workouts = workoutsToday,
+            calories = caloriesByDay[todayKey] ?: todayRow?.activeKcalEst,
+            workouts = workoutsToday,   // #614: real workout count (all sources), not exerciseCount
         )
         SleepCard(
             sleepPerformance = sleepPerformance,

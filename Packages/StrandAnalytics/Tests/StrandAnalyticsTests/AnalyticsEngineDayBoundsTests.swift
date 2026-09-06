@@ -105,13 +105,17 @@ final class AnalyticsEngineDayBoundsTests: XCTestCase {
             }
             let profile = UserProfile(weightKg: 75, heightCm: 178, age: 30, sex: "male")
 
+            // Pinned to the same stream in both calls: the calorie model scores the activity day, so
+            // trimming this input would move the result for a reason this test does not measure.
             let full = AnalyticsEngine.analyzeDay(day: day, dayHr: dayHr, daySteps: daySteps,
+                                                  calorieHr: dayHr,
                                                   profile: profile, tzOffsetSeconds: off)
             // The OLD path, byte for byte: pre-trim each stream with the formatter compare.
             let preHr = dayHr.filter { AnalyticsEngine.dayString($0.ts, offsetSec: off) == day }
             let preSteps = daySteps.filter { AnalyticsEngine.dayString($0.ts, offsetSec: off) == day }
             XCTAssertLessThan(preHr.count, dayHr.count, "fixture must actually spill outside the day")
             let pre = AnalyticsEngine.analyzeDay(day: day, dayHr: preHr, daySteps: preSteps,
+                                                 calorieHr: dayHr,
                                                  profile: profile, tzOffsetSeconds: off)
 
             XCTAssertEqual(full.daily, pre.daily, "off=\(off)")

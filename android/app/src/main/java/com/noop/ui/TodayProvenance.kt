@@ -6,6 +6,7 @@ import com.noop.R
 import com.noop.analytics.FusionSource
 import com.noop.analytics.ReadinessEngine
 import com.noop.ble.WhoopBleClient
+import com.noop.data.DailyMetric
 import com.noop.data.WhoopRepository
 import com.noop.data.Vo2MaxEstimator
 
@@ -40,6 +41,52 @@ internal fun provenanceBadgeLabel(owner: FusionSource?): DisplayText? = when (ow
     FusionSource.NUTRITION_CSV -> DisplayText.Resource(R.string.today_source_nutrition)
     FusionSource.LOCAL_CACHE -> DisplayText.Resource(R.string.today_source_cached)
     null -> null
+}
+
+/**
+ * Per-field provenance, as `day -> arbitration key -> the source that won that field`.
+ *
+ * Empty where no arbitration ran, so a miss means the row's own label is still correct.
+ */
+internal typealias VitalSourceMap = Map<String, Map<String, FusionSource>>
+
+/**
+ * The arbitration key behind a screen's vital key, or null for a vital the merge never arbitrates.
+ *
+ * The two vocabularies differ for respiratory rate, so a direct lookup would silently miss it.
+ */
+internal fun healthConnectVitalKey(uiKey: String): String? = when (uiKey) {
+    "resp", "resp_rate" -> "resp_rate"
+    else -> uiKey.takeIf { it in WhoopRepository.HEALTH_CONNECT_VITAL_KEYS }
+}
+
+/**
+ * The day key of the row that supplied a displayed vital: [primary] when it carries the field, else
+ * [fallback], else null.
+ *
+ * Each vital is read per field with a carry, so provenance keyed on the selected day would credit a
+ * carried number to a night that never measured it.
+ */
+internal fun vitalValueDay(
+    primary: DailyMetric?,
+    fallback: DailyMetric?,
+    has: (DailyMetric) -> Boolean,
+): String? = primary?.takeIf(has)?.day ?: fallback?.takeIf(has)?.day
+
+/**
+ * The provenance label for one displayed vital, or null where the merge decided nothing for it.
+ *
+ * A null leaves the caller its usual caption, which is still right for every field the row supplied
+ * itself.
+ */
+internal fun vitalFieldSourceLabel(
+    uiKey: String,
+    valueDay: String?,
+    vitalSources: VitalSourceMap,
+): DisplayText? {
+    if (valueDay == null || vitalSources.isEmpty()) return null
+    val key = healthConnectVitalKey(uiKey) ?: return null
+    return provenanceBadgeLabel(vitalSources[valueDay]?.get(key))
 }
 
 /**
@@ -82,6 +129,7 @@ internal fun provenanceDisplayLabel(
 internal fun vo2MaxAttributionLabelRes(estimator: Vo2MaxEstimator?): Int = when (estimator) {
     Vo2MaxEstimator.NES -> R.string.vo2max_method_nes
     Vo2MaxEstimator.UTH -> R.string.vo2max_method_uth
+    Vo2MaxEstimator.MEASURED -> R.string.vo2max_method_measured
     null -> R.string.vo2max_method_unknown
 }
 

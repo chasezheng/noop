@@ -1,5 +1,6 @@
 package com.noop.ui
 
+import com.noop.analytics.calorie.Calories
 import com.noop.data.AppleDaily
 import com.noop.data.DailyMetric
 import org.junit.Assert.assertEquals

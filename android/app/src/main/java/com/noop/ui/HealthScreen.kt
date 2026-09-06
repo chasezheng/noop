@@ -1843,6 +1843,9 @@ internal fun spo2EmptyState(
 @Composable
 fun VitalDetailScreen(vm: AppViewModel, key: String) {
     val days by vm.recentDays.collectAsStateWithLifecycle()
+    // Per-field winners behind the same merged rows: a merged row carries one deviceId for every
+    // column, so without them a vital another source won reads as the strap's.
+    val vitalSources by vm.healthConnectVitalSources.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val tempUnit = UnitPrefs.temperature(context)
     // The Effort detail renders per the user's Effort display scale (0-100 vs 0-21), like the Today tile.
@@ -1909,8 +1912,8 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
     // and make it a KEY, so flipping the setting rebuilds the model instead of serving a cached one.
     val skinTempPreferred = UnitPrefs.skinTempPreferred(LocalContext.current)
     val detail = if (isSeriesBacked) seriesDetail
-    else remember(days, key, tempUnit, effortScale, spo2CandidateByDay, skinTempPreferred) {
-        buildVitalDetail(days, key, tempUnit, effortScale, spo2CandidateByDay, skinTempPreferred)
+    else remember(days, key, tempUnit, effortScale, spo2CandidateByDay, skinTempPreferred, vitalSources) {
+        buildVitalDetail(days, key, tempUnit, effortScale, spo2CandidateByDay, skinTempPreferred, vitalSources)
     }
     var range by remember { mutableStateOf(VitalDetailRange.MONTH) }
 
@@ -2303,6 +2306,7 @@ private fun buildVitalDetail(
     // #1846: travels like tempUnit — read from prefs by the caller, never defaulted quietly here, so the
     // setting cannot look wired while doing nothing.
     skinTempPreferred: SkinTempDisplay.Kind = SkinTempDisplay.Kind.ABSOLUTE,
+    vitalSources: VitalSourceMap = emptyMap(),
 ): VitalDetailModel? {
     return when (key) {
     // The Today Key-Metrics Recovery tile's drill-in: the Recovery (Charge) trend timeline, matching the
@@ -2330,7 +2334,9 @@ private fun buildVitalDetail(
         title = uiString(R.string.l10n_health_screen_respiratory_rate_3fbb532f),
         unit = "rpm",
         color = Palette.metricCyan,
-        readings = days.mapNotNull { row -> row.respRateBpm?.let { VitalReading(row.day, it, row.deviceId) } },
+        readings = days.mapNotNull { row ->
+            row.respRateBpm?.let { VitalReading(row.day, it, vitalReadingSource(row, key, vitalSources)) }
+        },
         format = { String.format(Locale.US, "%.1f", it) },
     )
     "spo2" -> {
@@ -2339,7 +2345,9 @@ private fun buildVitalDetail(
         // Oura-only or WHOOP-4.0-only install with the toggle ON saw a real number on the tile but an
         // empty/stale screen here, since this branch never got #1568's candidate wiring). Calibrated
         // days always win; this only ADDS days the calibrated column is missing, never overwrites one.
-        val calibrated = days.mapNotNull { row -> row.spo2Pct?.let { row.day to VitalReading(row.day, it, row.deviceId) } }.toMap()
+        val calibrated = days.mapNotNull { row ->
+            row.spo2Pct?.let { row.day to VitalReading(row.day, it, vitalReadingSource(row, key, vitalSources)) }
+        }.toMap()
         val candidateOnly = spo2CandidateByDay
             .filterKeys { it !in calibrated }
             .map { (day, value) -> day to VitalReading(day, value, SPO2_CANDIDATE_ATTRIBUTION_SOURCE) }
@@ -2357,7 +2365,9 @@ private fun buildVitalDetail(
         title = uiString(R.string.l10n_health_screen_resting_heart_rate_9700f4d8),
         unit = "bpm",
         color = Palette.metricRose,
-        readings = days.mapNotNull { row -> row.restingHr?.toDouble()?.let { VitalReading(row.day, it, row.deviceId) } },
+        readings = days.mapNotNull { row ->
+            row.restingHr?.toDouble()?.let { VitalReading(row.day, it, vitalReadingSource(row, key, vitalSources)) }
+        },
         format = { it.roundToInt().toString() },
     )
     "hrv" -> VitalDetailModel(
@@ -2365,7 +2375,9 @@ private fun buildVitalDetail(
         title = uiString(R.string.l10n_health_screen_heart_rate_variability_20f0069e),
         unit = "ms",
         color = Palette.metricPurple,
-        readings = days.mapNotNull { row -> row.avgHrv?.let { VitalReading(row.day, it, row.deviceId) } },
+        readings = days.mapNotNull { row ->
+            row.avgHrv?.let { VitalReading(row.day, it, vitalReadingSource(row, key, vitalSources)) }
+        },
         format = { it.roundToInt().toString() },
     )
     "skin" -> {
@@ -2565,7 +2577,12 @@ private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): Vital
             title = uiString(R.string.l10n_health_screen_active_energy_2d3288f9),
             unit = "kcal",
             color = Palette.metricAmber,
-            readings = mergeReadings(imported, real),   // imported wins its day, else on-device estimate
+            // The shared precedence rather than a second expression of it. `mergeReadings` is
+            // first-wins by argument order, so the ordered sources are all this needs, and the
+            // per-day provenance survives.
+            readings = mergeReadings(
+                *calorieSourcesInOrder(real, imported, vm.caloriePreferOnDevice()).toTypedArray(),
+            ),
             format = { it.roundToInt().toString() },
         )
     }

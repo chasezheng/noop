@@ -53,6 +53,44 @@ object BackupSettingsCodec {
         "profile.waistCm" to Kind.DOUBLE,
         "profile.hrMax" to Kind.INT,
         "profile.hrZoneThresholds" to Kind.STRING,
+        // A measured VO₂max and the calorie settings behind it. Per-person rather than per-device, so
+        // a restore that dropped them would return the wearer to the shipped defaults and move their
+        // day totals. Booleans ride the Int kind: only Int, Double and String cross this wire.
+        "profile.vo2max" to Kind.DOUBLE,
+        "calorie.model" to Kind.STRING,
+        "calorie.preferOnDevice" to Kind.INT,
+        "calorie.dayActiveHRRFraction" to Kind.DOUBLE,
+        "calorie.boutActiveHRRFraction" to Kind.DOUBLE,
+        "calorie.activeAccrualMET" to Kind.DOUBLE,
+        "calorie.dynAccelMETGainPerG" to Kind.DOUBLE,
+        "calorie.hrFallbackWhenNoMET" to Kind.INT,
+        // The measured-basal model's own settings, one canonical key per field of
+        // `DynamicHrrModelSetting`. Same reasoning as the block above: per-person, and a restore that
+        // dropped them would move the wearer's day totals.
+        "calorie.sessionGapS" to Kind.INT,
+        "calorie.minHrCoverageFrac" to Kind.DOUBLE,
+        "calorie.hampelRadiusS" to Kind.INT,
+        "calorie.hampelSigmas" to Kind.DOUBLE,
+        "calorie.suppressPeaks" to Kind.INT,
+        "calorie.peakBlockS" to Kind.INT,
+        "calorie.peakPercentile" to Kind.DOUBLE,
+        "calorie.motionStillG" to Kind.DOUBLE,
+        "calorie.motionSmoothS" to Kind.INT,
+        "calorie.basalMinWindowS" to Kind.INT,
+        "calorie.basalHrRangeBpm" to Kind.DOUBLE,
+        "calorie.basalStillFrac" to Kind.DOUBLE,
+        "calorie.basalBeatCoverageFrac" to Kind.DOUBLE,
+        "calorie.restSmoothS" to Kind.INT,
+        "calorie.restSmoothMinSamples" to Kind.INT,
+        "calorie.basalHrSeedOffsetBpm" to Kind.DOUBLE,
+        "calorie.reserveRampBandBpm" to Kind.DOUBLE,
+        "calorie.measuredBasalKcalDay" to Kind.DOUBLE,
+        "calorie.basalFatNight" to Kind.DOUBLE,
+        "calorie.basalFatDay" to Kind.DOUBLE,
+        "calorie.basalFatDayStartHour" to Kind.DOUBLE,
+        "calorie.basalFatDayEndHour" to Kind.DOUBLE,
+        "calorie.activeFatAtZone1" to Kind.DOUBLE,
+        "calorie.activeFatAtZone2Top" to Kind.DOUBLE,
         "units.system" to Kind.STRING,
         "units.distance" to Kind.STRING,
         "units.temperature" to Kind.STRING,
@@ -120,8 +158,9 @@ object BackupSettingsCodec {
  * stays plain-JVM testable (this object needs a real Context).
  *
  * Storage mapping (canonical key → where it actually lives here):
- *  - `profile.*`  → the `noop_profile` prefs via [ProfileStore.backupSnapshot]/[ProfileStore.applyBackup]
- *                   (canonical `profile.hrMax` ↔ ProfileStore's `hr_max_override`).
+ *  - `profile.*` / `calorie.*` → the `noop_profile` prefs via [ProfileStore.backupSnapshot] /
+ *                   [ProfileStore.applyBackup] (canonical `profile.hrMax` ↔ ProfileStore's
+ *                   `hr_max_override`; the calorie knobs likewise carry their own storage names).
  *  - `units.*` / `effort.scale` → [NoopPrefs] under the SAME literal key strings as the canonical names
  *                   (they were already kept identical to the Apple @AppStorage keys).
  */

@@ -74,6 +74,9 @@ class Whoop5RRSqliteTest {
                 "dailyMetricsRange" -> days.values.filter {
                     it.deviceId == args[0] && it.day >= args[1] as String && it.day <= args[2] as String
                 }
+                "latestRestingHrDay" -> days.values.filter {
+                    it.deviceId == args[0] && it.day <= args[1] as String && it.restingHr != null
+                }.maxByOrNull { it.day }?.day
                 "upsertSleepSessions" -> {
                     (args[0] as List<*>).filterIsInstance<SleepSession>().forEach { sleeps[it.deviceId to it.startTs] = it }
                     Unit

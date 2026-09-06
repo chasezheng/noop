@@ -36,7 +36,11 @@ enum class KeyMetric(val raw: String, @StringRes val titleRes: Int) {
     // DashboardCard.SKIN_TEMP's own title resource rather than adding a new one. New case, NOT added
     // to defaultOrder below, so an existing user's saved layout (and a fresh install's default) is
     // byte-identical to before; only opts in via the layout editor.
-    SKIN_TEMP("skinTemp", R.string.today_card_skin_temp);
+    SKIN_TEMP("skinTemp", R.string.today_card_skin_temp),
+
+    // Active energy plus the whole day's resting metabolism. Separate from CALORIES because the two
+    // are different quantities: one is what the wearer earned, the other what the day cost.
+    TOTAL_ENERGY("totalEnergy", R.string.today_metric_total_energy);
 
     companion object {
         fun fromRaw(raw: String?): KeyMetric? = entries.firstOrNull { it.raw == raw }
@@ -44,7 +48,7 @@ enum class KeyMetric(val raw: String, @StringRes val titleRes: Int) {
         /** The original, hard-coded grid order — the default when the layout isn't customised. */
         val defaultOrder: List<KeyMetric> = listOf(
             CHARGE, EFFORT, REST, HRV, RESTING_HR,
-            BLOOD_OXYGEN, RESPIRATORY, STEPS, WEIGHT, CALORIES,
+            BLOOD_OXYGEN, RESPIRATORY, STEPS, WEIGHT, CALORIES, TOTAL_ENERGY,
         )
     }
 }

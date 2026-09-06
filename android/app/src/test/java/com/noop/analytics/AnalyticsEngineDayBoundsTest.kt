@@ -112,13 +112,18 @@ class AnalyticsEngineDayBoundsTest {
             }
             val profile = UserProfile(weightKg = 75.0, heightCm = 178.0, age = 30.0, sex = "male")
 
+            // `calorieHr` is pinned to the same stream in both calls. The calorie models run the
+            // activity day, not the calendar day, so pre-trimming that input would change activeKcalEst
+            // for a different reason than this test measures.
             val full = AnalyticsEngine.analyzeDay(day = day, dayHr = dayHr, daySteps = daySteps,
+                                                  calorieHr = dayHr,
                                                   profile = profile, tzOffsetSeconds = off)
             // The OLD path, byte for byte: pre-trim each stream with the formatter compare.
             val preHr = dayHr.filter { AnalyticsEngine.dayString(it.ts, off) == day }
             val preSteps = daySteps.filter { AnalyticsEngine.dayString(it.ts, off) == day }
             assertTrue("fixture must actually spill outside the day", preHr.size < dayHr.size)
             val pre = AnalyticsEngine.analyzeDay(day = day, dayHr = preHr, daySteps = preSteps,
+                                                 calorieHr = dayHr,
                                                  profile = profile, tzOffsetSeconds = off)
 
             assertEquals("off=$off", pre.daily, full.daily)

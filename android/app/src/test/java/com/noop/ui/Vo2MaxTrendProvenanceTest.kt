@@ -37,6 +37,7 @@ class Vo2MaxTrendProvenanceTest {
         assertEquals(R.string.vo2max_method_unknown, vo2MaxAttributionLabelRes(null))
         assertEquals(R.string.vo2max_method_nes, vo2MaxAttributionLabelRes(Vo2MaxEstimator.NES))
         assertEquals(R.string.vo2max_method_uth, vo2MaxAttributionLabelRes(Vo2MaxEstimator.UTH))
+        assertEquals(R.string.vo2max_method_measured, vo2MaxAttributionLabelRes(Vo2MaxEstimator.MEASURED))
         assertEquals(listOf(0..1), lineChartSegmentRanges(2, null))
     }
 }

@@ -1,62 +1,46 @@
 package com.noop.analytics
 
+import com.noop.analytics.calorie.HeartRateGates
+import com.noop.analytics.calorie.Calories
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Tests Calories.estimateDayCalories — the APPROXIMATE whole-day HR-only energy estimate
- * (Keytel active + Harris–Benedict BMR) that backs DailyMetric.activeKcalEst and the Today
- * Calories tile for BLE-only users. Pure-function tests; no DB. Not cloud/clinical parity.
+ * Tests `Calories.estimateDayEnergy` — the approximate whole-day heart-rate-only energy estimate
+ * (Keytel active above a revised Harris–Benedict basal).
+ *
+ * A pure-function oracle rather than a shipped path: the stored figure is scored through
+ * `CalorieDayScorer`, which dispatches on the wearer's selected model. Every figure here is an
+ * approximation, not clinical parity. No database.
  */
 class DayCaloriesTest {
 
-    private fun hrDay(bpm: Int, n: Int, start: Int = 0): List<com.noop.data.HrSample> =
-        (0 until n).map { com.noop.data.HrSample(deviceId = "test", ts = (start + it).toLong(), bpm = bpm) }
+    private fun hrDay(bpm: Int, n: Int): List<com.noop.data.HrSample> =
+        (0 until n).map { com.noop.data.HrSample(deviceId = "test", ts = it.toLong(), bpm = bpm) }
 
     @Test
     fun dayCalories_emptyIsZero() {
         assertEquals(
             0.0,
-            Calories.estimateDayCalories(emptyList(), UserProfile(), hrmax = 190.0, restingHR = 55.0),
+            Calories.estimateDayEnergy(emptyList(), UserProfile(), hrmax = 190.0, restingHR = 55.0).dayTotalKcal,
             1e-12,
         )
     }
 
     @Test
-    fun dayEnergy_emptyComponentsAreZero() {
-        val estimate = Calories.estimateDayEnergy(emptyList(), UserProfile(), hrmax = 190.0, restingHR = 55.0)
-        assertEquals(0.0, estimate.restingKcal, 1e-12)
-        assertEquals(0.0, estimate.activeKcal, 1e-12)
-        assertEquals(0.0, estimate.totalKcal, 1e-12)
-        assertEquals(0.0, estimate.observedSeconds, 1e-12)
-    }
-
-    @Test
     fun dayCalories_matchesBoutAtOneHz() {
-        // At a steady 1 Hz stream the day and bout estimators agree exactly: the bout path's
-        // elapsed-time weighting caps every ~1 s interval at 1 s, so it collapses to the day
-        // path's flat one-second-per-sample. They diverge on gappy streams, but not here.
+        // At a steady 1 Hz stream the day and bout estimators agree exactly: every interval is
+        // 1 s under both caps, and the day path's basal-plus-surplus split re-sums to the same
+        // gross rate the bout path credits directly. (They DIVERGE on gappy streams — the day
+        // path caps surplus at dayMaxGapS and keeps basal on the wall clock; see
+        // dayGap_capsSurplusNotBasal — but not here.)
         val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
         val hr = hrDay(bpm = 130, n = 600) // 10 min above the active threshold, dense 1 Hz
-        val day = Calories.estimateDayCalories(hr, profile, hrmax = 185.0, restingHR = 55.0)
+        val day = Calories.estimateDayEnergy(hr, profile, hrmax = 185.0, restingHR = 55.0).dayTotalKcal
         val bout = Calories.estimateBoutCalories(hr, profile, hrmax = 185.0, restingHR = 55.0).first
         assertEquals(bout, day, 1e-9)
-    }
-
-    @Test
-    fun gaplessOneHzDay_matchesLegacyTotal() {
-        // Pin the pre-change 1 Hz result so the sparse-cadence fix cannot silently move WHOOP 4
-        // totals. This mixed full day exercises both the resting floor and gross active rate.
-        val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
-        val block = 8 * 3_600
-        val day = hrDay(55, block) + hrDay(130, block, block) + hrDay(70, block, 2 * block)
-        val total = Calories.estimateDayCalories(day, profile, hrmax = 185.0, restingHR = 55.0)
-        // Measured from the legacy estimator on main. Its per-sample summation differs from the
-        // new R × N association by ~6.6e-9 kcal, so keep tolerance above that rounding noise.
-        assertEquals("a gapless 1 Hz day must remain equal to the legacy estimator",
-            6_774.323772067612, total, 1e-6)
     }
 
     @Test
@@ -74,48 +58,6 @@ class DayCaloriesTest {
             denseKcal, sparseKcal, denseKcal * 0.05)
         // Teeth: a per-sample count (60 samples) would be ~1/10th of the dense total.
         assertTrue(sparseKcal > denseKcal * 0.5)
-    }
-
-    @Test
-    fun sparseDayCalories_trackElapsedTimeNotSampleCount() {
-        // The daily path must be cadence-invariant too: WHOOP 5/MG's ~30 s HR and a 1 Hz
-        // stream over the same ten active minutes represent the same elapsed work.
-        val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
-        val dense = (0 until 600).map { com.noop.data.HrSample(deviceId = "t", ts = it.toLong(), bpm = 130) }
-        val sparse = (0 until 600 step 30).map { com.noop.data.HrSample(deviceId = "t", ts = it.toLong(), bpm = 130) }
-        val denseEnergy = Calories.estimateDayEnergy(dense, profile, hrmax = 185.0, restingHR = 55.0)
-        val sparseEnergy = Calories.estimateDayEnergy(sparse, profile, hrmax = 185.0, restingHR = 55.0)
-        assertEquals(600.0, sparseEnergy.observedSeconds, 1e-12)
-        assertEquals(denseEnergy.restingKcal, sparseEnergy.restingKcal, 1e-9)
-        assertEquals(denseEnergy.activeKcal, sparseEnergy.activeKcal, 1e-9)
-        assertEquals(denseEnergy.totalKcal, sparseEnergy.totalKcal, 1e-9)
-    }
-
-    @Test
-    fun dayEnergy_parityVectorOracle() {
-        val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
-        val vectors = listOf(
-            hrDay(55, 86_400),
-            (0 until 600).map { com.noop.data.HrSample(deviceId = "t", ts = it.toLong(), bpm = 130) },
-            (0 until 600 step 30).map { com.noop.data.HrSample(deviceId = "t", ts = it.toLong(), bpm = 130) },
-            listOf(
-                com.noop.data.HrSample(deviceId = "t", ts = 0L, bpm = 130),
-                com.noop.data.HrSample(deviceId = "t", ts = 3600L, bpm = 130),
-            ),
-        ).map { Calories.estimateDayEnergy(it, profile, hrmax = 185.0, restingHR = 55.0) }
-        // Generated by the Swift twin's testDayEnergyParityVectorOracle.
-        val expected = listOf(
-            doubleArrayOf(1825.247000000000, 0.000000000000, 1825.247000000000, 86_400.0),
-            doubleArrayOf(12.675326388889, 103.105766084605, 115.781092473494, 600.0),
-            doubleArrayOf(12.675326388889, 103.105766084603, 115.781092473492, 600.0),
-            doubleArrayOf(2.535065277778, 20.621153216921, 23.156218494699, 120.0),
-        )
-        vectors.zip(expected).forEach { (value, oracle) ->
-            assertEquals(oracle[0], value.restingKcal, 1e-9)
-            assertEquals(oracle[1], value.activeKcal, 1e-9)
-            assertEquals(oracle[2], value.totalKcal, 1e-9)
-            assertEquals(oracle[3], value.observedSeconds, 1e-9)
-        }
     }
 
     @Test
@@ -137,25 +79,105 @@ class DayCaloriesTest {
     }
 
     @Test
-    fun dayPath_capsRestingAndActiveGap() {
-        // Two isolated high readings must not claim the whole hour as either resting or active
-        // energy. With the 60 s carry cap, both components cover exactly 120 supported seconds.
+    fun sparseDay_tracksElapsedTimeNotSampleCount() {
+        // THE headline fix. Basal accrues on the WALL CLOCK, so a fully-worn 24 h day totals the
+        // subject's BMR at ANY sample cadence. The old model credited one second per sample, which
+        // is only correct at exactly 1 Hz: a WHOOP 5/MG streams live HR ≈ every 30 s, so the same
+        // fully-worn day counted 2 880 s of metabolism instead of 86 400 and collapsed to ~61 kcal.
+        val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
+        val sparse = (0 until 86_400 step 30)
+            .map { com.noop.data.HrSample(deviceId = "t", ts = it.toLong(), bpm = 55) }
+        assertEquals("one sample every 30 s over 24 h", 2_880, sparse.size)
+        val total = Calories.estimateDayEnergy(
+            sparse, profile, hrmax = 185.0, restingHR = 55.0, spanS = 86_400.0,
+        ).dayTotalKcal
+        assertEquals("a worn 24 h must total ≈ BMR regardless of sample cadence", 1825.25, total, 1.0)
+        // One second per sample would produce 2 880 × restingRate, about 60.8 kcal.
+        assertTrue("must not collapse toward the old per-sample undercount", total > 60.84 * 10)
+        // The dense stream over the same span agrees, which is the cadence-independence claim.
+        val dense = (0 until 86_400).map { com.noop.data.HrSample(deviceId = "t", ts = it.toLong(), bpm = 55) }
+        val denseTotal = Calories.estimateDayEnergy(
+            dense, profile, hrmax = 185.0, restingHR = 55.0, spanS = 86_400.0,
+        ).dayTotalKcal
+        assertEquals("sparse and dense coverage of the same day must agree", denseTotal, total, 1e-9)
+    }
+
+    @Test
+    fun sparseDay_tracksElapsedTimeForTheActiveTermToo() {
+        // The companion the cadence test above cannot make: at 55 bpm every sample sits below the
+        // active gate, so it pins basal alone. Duration is credited per SAMPLE, so the active term is
+        // where a cadence bug actually lands — and the day model now walks epochs rather than samples,
+        // which is a second way for a sample's seconds to be lost.
+        val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
+        fun activeAtCadence(step: Int) = Calories.estimateDayEnergy(
+            (0 until 86_400 step step).map { com.noop.data.HrSample(deviceId = "t", ts = it.toLong(), bpm = 140) },
+            profile, hrmax = 185.0, restingHR = 55.0, spanS = 86_400.0,
+        ).dayActiveKcal
+        val dense = activeAtCadence(1)
+        assertTrue("the fixture must earn active energy above resting", dense > 0.0)
+        // Within a tenth of a percent, not exact: the day's LAST sample has no successor to measure a
+        // gap against and credits one second whatever the cadence, so a sparse stream is short by its
+        // own interval. Bounded and known; a cadence bug is three orders of magnitude larger.
+        assertEquals("one sample every 30 s must credit 30 s", dense, activeAtCadence(30), dense * 0.001)
+        assertEquals("and every 5 s, 5 s", dense, activeAtCadence(5), dense * 0.001)
+        // Teeth: crediting one second per sample would leave a 30 s stream with 1/30th of the energy.
+        assertTrue("must not collapse toward a per-sample undercount", activeAtCadence(30) > dense / 2.0)
+    }
+
+    @Test
+    fun unwornStretch_stillAccruesBasal() {
+        // spanS is elapsed wall clock, not observed wear: an hour of HR at the start of the day
+        // still credits a full day of basal, because resting metabolism happened whether or not the
+        // strap was on the wrist. This is what makes the figure keep climbing all day.
+        val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
+        val wornOneHour = hrDay(55, 3_600)
+        val fullDay = Calories.estimateDayEnergy(
+            wornOneHour, profile, hrmax = 185.0, restingHR = 55.0, spanS = 86_400.0,
+        ).dayTotalKcal
+        assertEquals("basal spans the elapsed day even where the strap was off", 1825.25, fullDay, 1.0)
+        // Half the day elapsed (e.g. queried at noon) → half the basal: the total ACCUMULATES.
+        val halfDay = Calories.estimateDayEnergy(
+            wornOneHour, profile, hrmax = 185.0, restingHR = 55.0, spanS = 43_200.0,
+        ).dayTotalKcal
+        assertEquals(1825.25 / 2.0, halfDay, 1.0)
+        assertTrue("a partially-elapsed day must total less than a full one", halfDay < fullDay)
+    }
+
+    @Test
+    fun dayGap_capsSurplusNotBasal() {
+        // Elapsed-time weighting is only safe because the two terms are integrated separately:
+        // basal on the wall clock, and only the SURPLUS above resting on measured wear, capped at
+        // dayMaxGapS. Two active samples an hour apart must NOT credit an hour of exercise — the
+        // first carries at most 120 s of surplus and the tail 1 s — while basal still covers the
+        // whole 3601 s span.
         val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
         val gapped = listOf(
             com.noop.data.HrSample(deviceId = "t", ts = 0L, bpm = 130),
             com.noop.data.HrSample(deviceId = "t", ts = 3600L, bpm = 130),
         )
-        val gapEnergy = Calories.estimateDayEnergy(gapped, profile, hrmax = 185.0, restingHR = 55.0)
-        val shortEnergy = Calories.estimateDayEnergy(hrDay(130, 120), profile, hrmax = 185.0, restingHR = 55.0)
-        val continuousEnergy = Calories.estimateDayEnergy(hrDay(130, 3660), profile, hrmax = 185.0, restingHR = 55.0)
-        assertEquals(120.0, gapEnergy.observedSeconds, 1e-12)
-        assertEquals("a long gap must carry only 120 capped resting seconds",
-            shortEnergy.restingKcal, gapEnergy.restingKcal, 1e-9)
-        assertEquals("a long gap must carry only 120 capped active seconds",
-            shortEnergy.activeKcal, gapEnergy.activeKcal, 1e-9)
-        assertEquals(shortEnergy.totalKcal, gapEnergy.totalKcal, 1e-9)
-        assertTrue("a sensor gap must not be treated as continuous exercise",
-            gapEnergy.totalKcal < continuousEnergy.totalKcal)
+        val total = Calories.estimateDayEnergy(
+            gapped, profile, hrmax = 185.0, restingHR = 55.0, spanS = 3_601.0,
+        ).dayTotalKcal
+        assertEquals("basal over 3601 s + surplus over (120 s + 1 s), not over the full hour",
+            96.87, total, 0.5)
+        // Teeth: crediting the gap in full would be ~695 kcal — 7x larger.
+        assertTrue("an unbridged hour must not be credited as an hour of effort", total < 200.0)
+        // And basal is never double-counted: the total always at least covers the elapsed span.
+        assertTrue(total > 1825.247 / 86_400.0 * 3_601.0)
+    }
+
+    @Test
+    fun span_nullFallsBackToObservedSpan() {
+        // Pure-function callers and tests pass no span; the estimator then uses the span its own
+        // samples cover (first..last inclusive), which keeps a dense 1 Hz day numerically identical
+        // to the previous model and every existing vector deterministic.
+        val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
+        val dense = (0 until 600).map { com.noop.data.HrSample(deviceId = "t", ts = it.toLong(), bpm = 130) }
+        val implicitSpan = Calories.estimateDayEnergy(dense, profile, hrmax = 185.0, restingHR = 55.0).dayTotalKcal
+        val explicitSpan = Calories.estimateDayEnergy(
+            dense, profile, hrmax = 185.0, restingHR = 55.0, spanS = 600.0,
+        ).dayTotalKcal
+        assertEquals(explicitSpan, implicitSpan, 1e-9)
     }
 
     @Test
@@ -163,9 +185,9 @@ class DayCaloriesTest {
         // A whole day at resting HR burns far less than the same length all-active day,
         // and the resting-day total is positive (BMR floor).
         val profile = UserProfile(weightKg = 70.0, heightCm = 170.0, age = 30.0, sex = "nonbinary")
-        // Day activeThreshold = 55 + 0.50*(185-55) = 120 bpm; 60 < 120 (resting), 150 >= 120 (active).
-        val restingDay = Calories.estimateDayCalories(hrDay(60, 3600), profile, hrmax = 185.0, restingHR = 55.0)
-        val activeDay = Calories.estimateDayCalories(hrDay(150, 3600), profile, hrmax = 185.0, restingHR = 55.0)
+        // Day activeThreshold = 55 + 0.10*(185-55) = 68 bpm; 60 < 68 (resting), 150 >= 68 (active).
+        val restingDay = Calories.estimateDayEnergy(hrDay(60, 3600), profile, hrmax = 185.0, restingHR = 55.0).dayTotalKcal
+        val activeDay = Calories.estimateDayEnergy(hrDay(150, 3600), profile, hrmax = 185.0, restingHR = 55.0).dayTotalKcal
         assertTrue("resting day must burn > 0 (BMR floor)", restingDay > 0.0)
         assertTrue("active day must exceed resting day", activeDay > restingDay)
     }
@@ -178,30 +200,68 @@ class DayCaloriesTest {
         // Harris–Benedict BMR ≈ 1825 kcal. This is an APPROXIMATE estimate, not medical advice.
         val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
         val sedentary = hrDay(55, 86_400) // 24 h, all at resting HR
-        val total = Calories.estimateDayCalories(sedentary, profile, hrmax = 185.0, restingHR = 55.0)
+        val total = Calories.estimateDayEnergy(sedentary, profile, hrmax = 185.0, restingHR = 55.0).dayTotalKcal
         assertEquals("a sedentary full day must total ≈ the subject's BMR (~1825 kcal)",
             1825.25, total, 1.0)
     }
 
     @Test
-    fun dayCalories_lightActivityDayIsFarBelowOldInflatedTotal() {
-        // The bug: at the OLD 30% day gate (~94 bpm for this subject) ordinary low-intensity
-        // daytime HR (~100 bpm walking/standing) was credited the FULL Keytel gross-exercise
-        // rate, inflating the day total by ~1000+ kcal. The 50% day gate (120 bpm) now treats
-        // that HR as resting, so a realistic mixed light day (8 h sleep @55, 8 h sedentary @70,
-        // 8 h light activity @100) collapses toward BMR instead of the old runaway figure.
+    fun dayGate_isTenPercentHRRAndCreditsSubExerciseHR() {
+        // Pins the 10% day gate (dayActiveHRRFraction) and the trade-off it buys, so neither
+        // direction can be changed silently.
+        //
+        // WHY it was lowered: the gate is a fraction of HR RESERVE, so a fit user with a low
+        // resting HR was penalised hardest. At 42/180 the old 50% gate sat at 111 bpm — above
+        // walking, easy cycling AND a recovery jog — so their whole ordinary day scored as pure
+        // BMR and the daily figure barely moved. 10% puts that user's gate at ~56 bpm, between
+        // sitting and walking HR (see lowRestingHRUser_getsCreditForOrdinaryActivity).
+        //
+        // WHAT it costs: for a subject with an ORDINARY resting HR the gate now falls BELOW
+        // sedentary HR, and Keytel — regressed on genuine exercise — does not decay to BMR there.
+        // This subject (RHR 55) gets a 68 bpm gate, so a light day (8 h sleep @55, 8 h sedentary
+        // @70, 8 h light activity @100) is credited ≈ 5177 kcal against a true TDEE nearer ~2500.
+        // That over-count is the known, accepted cost of the low gate; it is pinned here
+        // deliberately rather than left to surprise someone.
         val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
-        val block = 8 * 3_600
-        val lightDay = hrDay(55, block) + hrDay(70, block, block) + hrDay(100, block, 2 * block)
-        val total = Calories.estimateDayCalories(lightDay, profile, hrmax = 185.0, restingHR = 55.0)
-        // NEW total ≈ 1825 kcal (every second below the 120 bpm gate → BMR floor).
-        assertEquals("a light-activity day must land near BMR, not the old inflated total",
-            1825.25, total, 1.0)
-        // Teeth: the OLD 30%-gate model credited the 8 h @100 bpm block at the full Keytel active
-        // rate (~3551 kcal for that block alone), so the old day total was ≈ 4768 kcal. Pin that
-        // we are now WELL below it (more than 2000 kcal lower).
-        assertTrue("the light-activity day must drop far below the old inflated ~4768 kcal",
-            total < 4768.0 - 2000.0)
+        assertEquals(0.10, HeartRateGates().dayActiveHRRFraction, 1e-12)
+        // Gate = 55 + 0.10 × (185 − 55) = 68 bpm.
+        val below = Calories.estimateDayEnergy(hrDay(67, 3_600), profile, hrmax = 185.0, restingHR = 55.0).dayTotalKcal
+        val above = Calories.estimateDayEnergy(hrDay(69, 3_600), profile, hrmax = 185.0, restingHR = 55.0).dayTotalKcal
+        assertTrue("69 bpm is above the 68 bpm gate, 67 is below", above > below)
+        assertEquals("sub-gate hour = basal only", 1825.247 / 24.0, below, 0.01)
+
+        // The light day, with DISTINCT timestamps so the wall-clock span is a real 24 h.
+        val lightDay =
+            (0 until 8 * 3_600).map { com.noop.data.HrSample(deviceId = "t", ts = it.toLong(), bpm = 55) } +
+            (0 until 8 * 3_600).map { com.noop.data.HrSample(deviceId = "t", ts = (8 * 3_600 + it).toLong(), bpm = 70) } +
+            (0 until 8 * 3_600).map { com.noop.data.HrSample(deviceId = "t", ts = (16 * 3_600 + it).toLong(), bpm = 100) }
+        val total = Calories.estimateDayEnergy(lightDay, profile, hrmax = 185.0, restingHR = 55.0).dayTotalKcal
+        assertEquals("the 10% gate credits sedentary + light HR the Keytel rate — known over-count",
+            5177.32, total, 2.0)
+        assertTrue("the whole point of the low gate: a light day now exceeds bare BMR", total > 1825.25)
+    }
+
+    @Test
+    fun lowRestingHRUser_getsCreditForOrdinaryActivity() {
+        // The case the 10% gate exists for: RHR 42 / HRmax 180 (reserve 138 bpm). Walking ~65,
+        // easy cycling ~95 and a recovery jog ~115 all sat BELOW the old 50% gate of 111 bpm (only
+        // the jog cleared it), so a genuinely active day scored as bare BMR. At 10% the gate is
+        // 55.8 bpm and each of those activities is credited above basal, in the right order of
+        // effort.
+        val profile = UserProfile(weightKg = 75.0, heightCm = 178.0, age = 35.0, sex = "male")
+        fun hourAt(bpm: Int) =
+            Calories.estimateDayEnergy(hrDay(bpm, 3_600), profile, hrmax = 180.0, restingHR = 42.0).dayTotalKcal
+        val sitting = hourAt(50) // below the 55.8 bpm gate → basal only
+        val walking = hourAt(65)
+        val cycling = hourAt(95)
+        val zone2 = hourAt(130)
+        assertTrue("walking must clear the gate; sitting must not", sitting < walking)
+        assertTrue(walking < cycling)
+        assertTrue(cycling < zone2)
+        // Teeth: under the OLD 50% gate (111 bpm) walking AND cycling were both basal-only, so they
+        // were indistinguishable from sitting. Prove they no longer are.
+        assertTrue("easy cycling must be worth clearly more than an hour of sitting",
+            cycling > sitting * 2.0)
     }
 
     @Test
@@ -257,52 +317,5 @@ class DayCaloriesTest {
         assertNotNull(fallback)
         assertNotNull(explicit)
         assertEquals(fallback!!, explicit!!, 1e-9)
-    }
-
-    /**
-     * A dropout in an otherwise dense day carries RESTING energy across the gap but not ACTIVE energy.
-     *
-     * Active duration is capped at the inferred cadence (1 s here), so the two dense blocks credit
-     * exactly as much active energy as one continuous block of the same sample count — no magic
-     * number, just the invariant. Resting is capped at the wider [Calories.dayMaxObservedGapS] and so
-     * DOES grow, which is the intended asymmetry: metabolism continues across a gap, exercise is not
-     * evidenced by one. Capping active at 60 s instead would have credited the reading before the gap
-     * with a full minute of exercise it never demonstrated.
-     */
-    @Test
-    fun dropoutInADenseDayCarriesRestingButNotActive() {
-        val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
-        val gapped = hrDay(130, 120, start = 0) + hrDay(130, 120, start = 200)   // 81 s dropout
-        val continuous = hrDay(130, 240)
-        val g = Calories.estimateDayEnergy(gapped, profile, hrmax = 185.0, restingHR = 55.0)
-        val c = Calories.estimateDayEnergy(continuous, profile, hrmax = 185.0, restingHR = 55.0)
-        assertEquals("active energy must not grow across a sensor gap", c.activeKcal, g.activeKcal, 1e-9)
-        assertTrue("resting energy SHOULD carry across the gap", g.restingKcal > c.restingKcal)
-        assertTrue("but only as far as the observed-gap cap", g.observedSeconds < 240.0 + 81.0)
-    }
-
-    /**
-     * Two readings in the same second are reachable — `hrSample` is keyed (deviceId, ts) and the day
-     * feed unions devices, so a two-strap day has one per strap. Only the LAST of a tied run receives
-     * the interval, so without a tiebreak the day's active energy depended on the order the feed
-     * happened to arrive in, and on a sort stability Swift does not guarantee.
-     *
-     * Pinned twice: the result must not depend on input order, and a tie must hand the interval to the
-     * LOWER reading (so a lone elevated duplicate cannot claim the following minute as exercise).
-     */
-    @Test
-    fun tiedTimestampsAreOrderIndependentAndResolveToTheLowerReading() {
-        val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
-        val tied = listOf(
-            com.noop.data.HrSample(deviceId = "a", ts = 0L, bpm = 150),
-            com.noop.data.HrSample(deviceId = "b", ts = 0L, bpm = 60),
-            com.noop.data.HrSample(deviceId = "b", ts = 60L, bpm = 60),
-        )
-        val forward = Calories.estimateDayEnergy(tied, profile, hrmax = 185.0, restingHR = 55.0)
-        val reversed = Calories.estimateDayEnergy(tied.reversed(), profile, hrmax = 185.0, restingHR = 55.0)
-        assertEquals("feed order must not change the day's energy", forward.activeKcal, reversed.activeKcal, 1e-12)
-        assertEquals(forward.restingKcal, reversed.restingKcal, 1e-12)
-        assertEquals("the tie resolves to the lower reading, so no active energy is credited",
-            0.0, forward.activeKcal, 1e-12)
     }
 }

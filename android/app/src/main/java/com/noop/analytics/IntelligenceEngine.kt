@@ -1,12 +1,16 @@
 package com.noop.analytics
 
-import java.util.Locale
+import com.noop.analytics.calorie.Calories
+import com.noop.analytics.calorie.EnergyModel
 import com.noop.data.DailyMetric
 import com.noop.data.DeviceBrandCatalog
+import com.noop.data.GravitySample
+import com.noop.data.HrSample
 import com.noop.data.MetricSeriesRow
 import com.noop.data.OuraRespScale
 import com.noop.data.ScoreInputProvenanceRow
 import com.noop.data.SleepSession
+import com.noop.data.StepSample
 import com.noop.data.Vo2MaxEstimator
 import com.noop.data.WhoopRepository
 import com.noop.data.WorkoutRow
@@ -16,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.Locale
 
 /*
  * IntelligenceEngine.kt , on-device "intelligence": computes recovery / day-strain /
@@ -387,7 +392,7 @@ object IntelligenceEngine {
     suspend fun analyzeRecent(
         repo: WhoopRepository,
         profile: UserProfile = UserProfile(),
-        maxDays: Int = 21,
+        maxDays: Int = DEFAULT_RECENT_DAYS,
         importedDeviceId: String = "my-whoop",
         maxHROverride: Double? = null,
         nowSeconds: Long = System.currentTimeMillis() / 1000L,
@@ -553,6 +558,9 @@ object IntelligenceEngine {
         scored
     }
 
+    /** The span a routine [analyzeRecent] pass covers when a caller names none. */
+    const val DEFAULT_RECENT_DAYS: Int = 21
+
     /** History span for the one-shot Effort rescore , large enough to cover any real wear history,
      *  matching the Swift `historyDays` default. */
     const val EFFORT_RESCORE_HISTORY_DAYS: Int = 4000
@@ -599,10 +607,11 @@ object IntelligenceEngine {
         flagSet()
     }
 
+
     private suspend fun analyzeRecentOnCpu(
         repo: WhoopRepository,
         profile: UserProfile = UserProfile(),
-        maxDays: Int = 21,
+        maxDays: Int = DEFAULT_RECENT_DAYS,
         importedDeviceId: String = "my-whoop",
         maxHROverride: Double? = null,
         nowSeconds: Long = System.currentTimeMillis() / 1000L,
@@ -706,6 +715,13 @@ object IntelligenceEngine {
         // re-score in pass 2. Collected oldest-first to match foldHistory's replay order.
         // foldHistory winsorizes outliers. days() is oldest-first (Swift ascending).
         val hist = repo.days(importedDeviceId)
+        // Health Connect's daily rows seed the baseline alongside the import, in a separate list: the
+        // readers below take a `hist` row to mean a strap export covers the day, which a phone
+        // aggregate does not. Those are exactly the days the strap did not measure, so without them
+        // the baseline has nothing to seed from. The union keeps one row per day, the strap winning,
+        // oldest first, which the winsorizing replay below depends on.
+        val healthConnectHist = repo.days(WhoopRepository.HEALTH_CONNECT_SOURCE)
+        val baselineHist = baselineSeedRows(hist, healthConnectHist)
         // CAPTURE-B: per-day resolved read owner + HR-row count, captured in pass 1, consumed by pass 2's
         // universal dayOwner emit (which reuses the SAME importedWhoopDays / appleHealthDays sets pass 2
         // builds for daySourceToken, so there is no extra read). Only populated when the universal sink is
@@ -718,8 +734,12 @@ object IntelligenceEngine {
         // per-value "yyyy-MM-dd" day keys (parallel to the values) so foldHistory drops every night before
         // the epoch. baselineEpoch is threaded down from the Context-aware caller (0.0 = no recalibration).
         // rhr/resp/skin stay on the 2-arg fold , recalibration is HRV-only.
-        val hrvBase1 = Baselines.foldHistory(hist.map { it.avgHrv }, hist.map { it.day }, hrvCfg, baselineEpoch)
-        val rhrBase1 = Baselines.foldHistory(hist.map { it.restingHr?.toDouble() }, hist.map { it.day }, rhrCfg, recoveryEpoch)
+        val hrvBase1 = Baselines.foldHistory(
+            baselineHist.map { it.avgHrv }, baselineHist.map { it.day }, hrvCfg, baselineEpoch,
+        )
+        val rhrBase1 = Baselines.foldHistory(
+            baselineHist.map { it.restingHr?.toDouble() }, baselineHist.map { it.day }, rhrCfg, recoveryEpoch,
+        )
         val baselines1 = ProfileBaselines(hrv = hrvBase1, restingHR = rhrBase1)
 
         // Keep each night's small DayResult (daily metrics + detected sessions), NOT the raw
@@ -850,6 +870,12 @@ object IntelligenceEngine {
             // window of days scored by a recipe the user just turned off, with nothing to explain it.
             effortMethod.toString(),
             dayCycleMode.persistedValue,
+            // Every calorie setting changes the stored energy for every day, so a scan cached under
+            // one setting is stale as soon as the wearer edits it. The body terms belong here too:
+            // both the basal and the active rate read them.
+            profile.heartRateGates.toString(), profile.hybridModelSetting.toString(),
+            profile.weightKg.toString(), profile.heightCm.toString(),
+            profile.vo2maxOverride.toString(),
         ).joinToString("|")
         // Drop the whole cache on a config change. Under [analyzeGate] (this whole pass runs holding the
         // lock), so mutating the object-level cache here is race-free.
@@ -1041,23 +1067,12 @@ object IntelligenceEngine {
             // is inclusive, so end at +86400-1s; analyzeDay also filters to the day). (#277)
             val dayMidnight = midnightLocal(dayStart, tzOffsetSeconds)
             val dayEnd = dayMidnight + SECONDS_PER_DAY - 1
-            // Same [owner] as the night window above (I2): the additive day totals must come from the one
+            // The same owner as the night window above: an additive day total must come from the one
             // device that owns the day, never a mix.
-            // #997: for a PAST day the [from, to] night read above already spans this calendar day (to =
-            // nextMidnight ≥ dayEnd), so derive the day streams by filtering the in-memory night lists
-            // instead of re-reading them from the store (~60 redundant reads/pass, incl. the big HR ones).
-            // TODAY (dayEnd past the 18 h cap) and a limit-truncated night read DECLINE (null) → direct
-            // read, so the shortcut only ever skips work, never changes data. Twin of Swift's #997.
-            val dayHr = AnalyticsEngine.daySliceFromNight(hr, from, to, dayMidnight, dayEnd) { it.ts.toLong() }
-                ?: repo.hrSamplesForDevice(owner, dayMidnight, dayEnd, STREAM_LIMIT)
-            val daySteps = AnalyticsEngine.daySliceFromNight(steps, from, to, dayMidnight, dayEnd) { it.ts }
-                ?: repo.stepSamples(owner, dayMidnight, dayEnd, STREAM_LIMIT)
-            // Full calendar-day gravity for WORKOUT detection. For a PAST day the night window runs to the
-            // next local midnight so the afternoon/evening is already in `grav`; only TODAY (18 h cap) reads
-            // directly, which the slice's `dayHi > nightHi` guard handles — a 5 pm run still shows up the
-            // same day.
-            val dayGrav = AnalyticsEngine.daySliceFromNight(grav, from, to, dayMidnight, dayEnd) { it.ts }
-                ?: repo.gravitySamplesForDevice(owner, dayMidnight, dayEnd, STREAM_LIMIT)
+            val ds = dayStreams(
+                repo, owner, day, hr, steps, grav, from, to, dayMidnight, dayEnd,
+                readBeats = profile.calorieModel == EnergyModel.DYNAMIC_HRR,
+            )
 
             // CONSUME (#531 / #175): the strap's OWN band sleep_state for the night window as (ts, state)
             // samples, so the H7 morning-stillness guard can confirm a borderline re-onset against the strap's
@@ -1147,9 +1162,14 @@ object IntelligenceEngine {
                 vendorResp = vendorResp,
                 gravity = grav,
                 steps = steps,
-                dayHr = dayHr,
-                daySteps = daySteps,
-                dayGravity = dayGrav,
+                dayHr = ds.hr,
+                daySteps = ds.steps,
+                dayGravity = ds.gravity,
+                calorieHr = ds.calorieHr,
+                calorieGravity = ds.calorieGravity,
+                calorieBeats = ds.calorieBeats,
+                recordedWorkouts = ds.recordedWorkouts,
+                calorieRestingHR = ds.calorieRestingHR,
                 skinTemp = skin,
                 skinTempFamily = skinFamily,   // #938
                 skinTempAnchorRaw = skinAnchorRaw,   // #938 second capture: per-device worn anchor
@@ -1187,6 +1207,9 @@ object IntelligenceEngine {
                 hrvWindowDetail = dayStart == nowLocalMidnight,
                 deepHrvWindow = deepHrvWindow,
                 effortMethod = effortMethod,
+                // Bounds the basal term to the elapsed part of an in-progress day; a past day elapses
+                // in full.
+                nowTs = nowSeconds,
             )
             dayScoreNanos += System.nanoTime() - tScore0
 
@@ -1356,7 +1379,7 @@ object IntelligenceEngine {
             // motion-estimated, surfaced by the calibration/estimate trace below). Skipping the call here
             // stops the 4.0 export carrying a "counterSamples=0 ... need >=2" line that read as broken; a
             // 5/MG always banks counter rows so this never suppresses its real trace.
-            emitStepsRawTrace(dayTrace.stepsRec, daySteps, day, tzOffsetSeconds, profile.stepTicksPerStep)
+            emitStepsRawTrace(dayTrace.stepsRec, ds.steps, day, tzOffsetSeconds, profile.stepTicksPerStep)
 
             // Harvest the baseline-independent nightly aggregates (a day with no detected
             // sleep yields null → recorded as a missing night, i.e. skip-and-hold). The raw
@@ -1486,6 +1509,13 @@ object IntelligenceEngine {
         mergeNightlyIntoHistory(histHrvByDay, nightlyHrvByDay)
         mergeNightlyIntoHistory(histRhrByDay, nightlyRhrByDay)
         mergeNightlyIntoHistory(histRespByDay, nightlyRespByDay)
+        // Health Connect fills last, below the import and below this pass's own nights, so it reaches
+        // only a day neither of those measured. Respiration is left out: its fold is keyed by the
+        // measuring device, and a phone aggregate has no device era of its own.
+        mergeNightlyIntoHistory(histHrvByDay, healthConnectHist.associate { it.day to it.avgHrv })
+        mergeNightlyIntoHistory(
+            histRhrByDay, healthConnectHist.associate { it.day to it.restingHr?.toDouble() },
+        )
         // Which SOURCE measured each night's respiration — the input `Baselines.deviceEraEpoch` (#459)
         // needs for the resp fold below. `resolvedScoreOwnerByDay` (THIS PASS's freshly resolved per-day
         // owner, before any re-homing) must win over `hist`, not just fill its gaps: `hist` is every day
@@ -1668,6 +1698,13 @@ object IntelligenceEngine {
             // scored — for later mean-vs-floor evaluation from exports.
             primarySessionRHRByDay[daily.day]?.let { v ->
                 restRows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = "rhr_primary_session", value = v))
+            }
+            // The basal heart rate the day's energy was anchored on, for a wearer or a later change to
+            // compare against the sleep-derived resting HR beside it. Nothing reads it back, so the
+            // model never consumes its own output. Deliberately NOT `daily.restingHr`: that column is a
+            // different quantity over a different window, and several screens read it.
+            res.basalHrBpm?.let { basal ->
+                restRows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = "basal_hr", value = basal))
             }
             // #1169: its coverage inputs beside the mean — valid-sample count + primary-session duration (s)
             // — so a thin-coverage night can be down-weighted in the later holdout. Raw inputs, not a fraction.
@@ -1855,21 +1892,19 @@ object IntelligenceEngine {
         // untouched; the computed row carries the NOOP-derived Charge + the Rest composite. HONEST DATA: the
         // engine returns null + calibrating until the HRV baseline is usable, so an import-only day stays
         // calibrating rather than faking a number. Strap/WHOOP-import days keep winning , we skip any day
-        // already scored this pass. Health Connect writes its DailyMetric rows under the strap source
-        // ("my-whoop"), so importedDeviceId is included; a row already carrying its OWN recovery is left
-        // alone. Mirrors the Swift fold.
+        // already scored this pass; a row already carrying its OWN recovery is left alone. Mirrors the
+        // Swift fold.
         val importScoredDays = HashSet<String>().apply { addAll(dailies.map { it.day }) }
-        val healthConnectDays = repo.appleDaily(
-            WhoopRepository.HEALTH_CONNECT_SOURCE,
-            oldestDay,
-            newestDay,
-        ).mapTo(HashSet()) { it.day }
         val importSourceIds = buildList {
-            add(importedDeviceId) // Health Connect imports its DailyMetric rows under the strap source.
+            add(importedDeviceId)
             add(WhoopRepository.APPLE_HEALTH_SOURCE)
             add(WhoopRepository.HEALTH_CONNECT_SOURCE)
             addAll(WEARABLE_IMPORT_SOURCES)
         }.distinct()
+        // Days the strap's own raw import covers. Without this, a phone aggregate could re-score a
+        // day the strap owns and the row would be persisted under the computed source — a Health
+        // Connect number wearing the strap's provenance.
+        val strapRawDays = repo.dailyMetrics(importedDeviceId, oldestDay, newestDay).mapTo(HashSet()) { it.day }
         for (source in importSourceIds) {
             val rows = repo.dailyMetrics(source, oldestDay, newestDay)
             // A real export that already carries its OWN recovery WINS , never overwrite a verbatim imported
@@ -1877,20 +1912,15 @@ object IntelligenceEngine {
             val byDay = rows.associateBy { it.day }
             for (r in rows) if (r.recovery != null) importScoredDays.add(r.day)
             for (w in watchRecoveries(rows, importScoredDays)) {
+                if (source != importedDeviceId && w.day in strapRawDays) continue
                 val recovery = w.recovery ?: continue
                 val row = byDay[w.day] ?: continue
                 val scored = row.copy(deviceId = computedId, recovery = recovery)
                 dailies.add(scored)
                 importScoredDays.add(w.day)
-                // Health Connect's compatibility DailyMetric row lives under `my-whoop`, while its
-                // AppleDaily row retains the real source. Preserve that provider fact without changing
-                // ingestion or score precedence.
-                resolvedScoreOwnerByDay[w.day] =
-                    if (source == importedDeviceId && w.day in healthConnectDays) {
-                        WhoopRepository.HEALTH_CONNECT_SOURCE
-                    } else {
-                        source
-                    }
+                // The source the row was read from is the provider: a Health Connect daily row carries
+                // its own id, so no inference from a sibling row is needed.
+                resolvedScoreOwnerByDay[w.day] = source
                 RestScorer.restFromDaily(scored)?.let { rest ->
                     restRows.add(MetricSeriesRow(deviceId = computedId, day = w.day, key = "sleep_performance", value = rest))
                 }
@@ -2093,7 +2123,7 @@ object IntelligenceEngine {
         if (faPts.isNotEmpty()) {
             repo.upsertMetricSeriesWithProvenance(
                 rows = faPts,
-                provenance = vo2MaxProvenance(faPts, profile.waistCm, computedId),
+                provenance = vo2MaxProvenance(faPts, profile.waistCm, computedId, profile.vo2maxOverride),
             )
         }
 
@@ -2676,7 +2706,8 @@ object IntelligenceEngine {
         // a (rougher) VO₂max instead of a blank. HRmax via the shared Tanaka estimator (no HR history here →
         // age-predicted); RHR = the same median the Nes value used. Both persist under "vo2max_est"; the card
         // labels it "Estimated". Mirrors the Swift twin.
-        val vo2: Double? = res.vo2max ?: run {
+        // A measured value outranks both estimators.
+        val vo2: Double? = profile.vo2maxOverride.takeIf { it > 0.0 } ?: res.vo2max ?: run {
             val hrmax: Double = StrainScorer.estimateHRmax(emptyList<Double>(), profile.age).first
             Calories.vo2maxFor(hrmax, medianOfDoubles(rhrs))
         }
@@ -2688,14 +2719,14 @@ object IntelligenceEngine {
      *  Method selection is captured at compute time; UI readers must never reconstruct it from today's
      *  profile because changing/removing a waist is a legitimate transition between estimators. */
     fun vo2MaxProvenance(
-        rows: List<MetricSeriesRow>, waistCm: Double, computedId: String,
+        rows: List<MetricSeriesRow>, waistCm: Double, computedId: String, vo2maxOverride: Double = 0.0,
     ): List<ScoreInputProvenanceRow> = rows.firstOrNull { it.key == "vo2max_est" }?.let { point ->
         listOf(
             ScoreInputProvenanceRow(
                 deviceId = computedId,
                 day = point.day,
                 key = point.key,
-                sourceId = Vo2MaxEstimator.forWaistCm(waistCm).provenanceId,
+                sourceId = Vo2MaxEstimator.forProfile(waistCm, vo2maxOverride).provenanceId,
             ),
         )
     }.orEmpty()
@@ -2720,7 +2751,7 @@ object IntelligenceEngine {
         if (rows.isNotEmpty()) {
             repo.upsertMetricSeriesWithProvenance(
                 rows = rows,
-                provenance = vo2MaxProvenance(rows, profile.waistCm, computedId),
+                provenance = vo2MaxProvenance(rows, profile.waistCm, computedId, profile.vo2maxOverride),
             )
         }
         return rows.isNotEmpty()
@@ -2786,7 +2817,7 @@ object IntelligenceEngine {
      * check is the same `LIMIT 1` over the same window the caller already reads. Mirrors the Swift
      * IntelligenceEngine.resolveDayOwner.
      */
-    private suspend fun resolveDayOwner(
+    internal suspend fun resolveDayOwner(
         repo: WhoopRepository,
         ownerSource: DayOwnerSource?,
         candidatePriorities: List<Pair<String, Int>>,
@@ -2849,6 +2880,25 @@ object IntelligenceEngine {
         for ((day, v) in nightly) if (hist[day] == null) hist[day] = v
     }
 
+    /**
+     * The rows the first-pass baseline is seeded from: [imported] and [healthConnect] combined, one
+     * row per day, oldest first.
+     *
+     * The strap wins every column it carries and Health Connect fills only what it left null, so a day
+     * the strap covered keeps its own numbers and a day it never covered stops being a hole. The order
+     * is load-bearing: the fold replays chronologically and winsorizes against the run so far, so a
+     * row out of order produces a different baseline.
+     *
+     * Android-only: no other platform has a Health Connect importer.
+     */
+    internal fun baselineSeedRows(
+        imported: List<DailyMetric>,
+        healthConnect: List<DailyMetric>,
+    ): List<DailyMetric> {
+        if (healthConnect.isEmpty()) return imported
+        return WhoopRepository.unionByDay(listOf(imported, healthConnect)).sortedBy { it.day }
+    }
+
     internal fun midnightUtc(ts: Long): Long = ts - Math.floorMod(ts, SECONDS_PER_DAY)
 
     /**
@@ -2860,6 +2910,94 @@ object IntelligenceEngine {
      */
     internal fun midnightLocal(ts: Long, offsetSec: Long): Long =
         ts - Math.floorMod(ts + offsetSec, SECONDS_PER_DAY)
+
+    /** One day's streams, read together so a caller pays for one suspension rather than four. */
+    private data class DayStreams(
+        val hr: List<HrSample>,
+        val steps: List<StepSample>,
+        val gravity: List<GravitySample>,
+        /** The activity-day heart rate: [hr] plus whatever runs past local midnight. */
+        val calorieHr: List<HrSample>,
+        val calorieGravity: List<GravitySample>,
+        /** The activity day's beat-to-beat coverage, one count per second that carried beats. */
+        val calorieBeats: List<Pair<Long, Int>>,
+        /** Workout windows already on record, which detection does not reproduce. */
+        val recordedWorkouts: List<LongRange>,
+        /** The resting HR the calorie models use when the day staged no sleep of its own. */
+        val calorieRestingHR: Double?,
+    )
+
+    /**
+     * One day's streams: the calendar day `[dayMidnight, dayEnd]`, and the activity day.
+     *
+     * Where the night lists already span the calendar day, those streams are filtered in memory rather
+     * than read again. The slice declines to a direct read wherever that is unsafe, so it only ever
+     * skips work and never changes data.
+     *
+     * Everything is returned in one call because every suspension point in the caller costs it method
+     * size against a fixed budget.
+     */
+    private suspend fun dayStreams(
+        repo: WhoopRepository,
+        owner: String,
+        day: String,
+        nightHr: List<HrSample>,
+        nightSteps: List<StepSample>,
+        nightGravity: List<GravitySample>,
+        from: Long,
+        to: Long,
+        dayMidnight: Long,
+        dayEnd: Long,
+        readBeats: Boolean,
+    ): DayStreams {
+        val hr = AnalyticsEngine.daySliceFromNight(nightHr, from, to, dayMidnight, dayEnd) { it.ts.toLong() }
+            ?: repo.hrSamplesForDevice(owner, dayMidnight, dayEnd, STREAM_LIMIT)
+        val steps = AnalyticsEngine.daySliceFromNight(nightSteps, from, to, dayMidnight, dayEnd) { it.ts }
+            ?: repo.stepSamples(owner, dayMidnight, dayEnd, STREAM_LIMIT)
+        val gravity = AnalyticsEngine.daySliceFromNight(nightGravity, from, to, dayMidnight, dayEnd) { it.ts }
+            ?: repo.gravitySamplesForDevice(owner, dayMidnight, dayEnd, STREAM_LIMIT)
+        // Read here so the caller pays no extra suspension for it.
+        val recorded = repo.workoutsUnion(owner, dayMidnight, dayEnd, STREAM_LIMIT)
+            .map { it.startTs until it.endTs }
+        // The most recent measured resting HR from any source, for a day that staged no sleep of its
+        // own and would otherwise be scored against an invented value.
+        //
+        // Each source is asked for the latest day it has one and only that day is read back, rather
+        // than pulling whole histories for every day of the pass.
+        val sources = repo.vitalsSourceIds(owner)
+        val restingHrDay = sources.mapNotNull { repo.latestRestingHrDay(it, day) }.maxOrNull()
+        val restingHR = restingHrDay?.let { latest ->
+            AnalyticsEngine.calorieRestingHR(
+                rows = WhoopRepository.preferMeasuredRestingHr(
+                    sources.flatMap { repo.dailyMetrics(it, latest, latest) },
+                ),
+                day = day,
+            )
+        }
+        // Read only for the one model that needs it: a day of beats is tens of thousands of rows, and
+        // every other model would pay for them without reading one.
+        //
+        // Under the union of the ids the owner banks through, matching what a screen that recomputes
+        // this day resolves: a re-added strap banks live rows under a fresh id while its history
+        // stays under the canonical one, and a day scored from one id and explained from two would
+        // pass the beat-coverage test on one side and fail it on the other. The first id to carry a
+        // second wins it outright, because both ids hold the same heartbeats.
+        val beats = if (!readBeats) {
+            emptyList()
+        } else {
+            val perSecond = LinkedHashMap<Long, Int>()
+            for (id in repo.importedSourceIds(owner)) {
+                for ((ts, count) in repo.rrIntervalsForDevice(id, dayMidnight, dayEnd, STREAM_LIMIT)
+                    .groupingBy { it.ts }.eachCount()
+                ) {
+                    perSecond.putIfAbsent(ts, count)
+                }
+            }
+            perSecond.toList().sortedBy { it.first }
+        }
+        // The activity day opens at local midnight, so the calorie streams are the calendar-day ones.
+        return DayStreams(hr, steps, gravity, hr, gravity, beats, recorded, restingHR)
+    }
 
     /**
      * The END of the sleep-read window for the night that finishes on [dayStart]'s day. A PAST day reads

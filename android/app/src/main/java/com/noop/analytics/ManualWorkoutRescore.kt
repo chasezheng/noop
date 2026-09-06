@@ -1,5 +1,6 @@
 package com.noop.analytics
 
+import com.noop.analytics.calorie.Calories
 import com.noop.data.HrSample
 
 /**

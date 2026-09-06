@@ -127,6 +127,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.noop.analytics.WorkoutSport
 import com.noop.analytics.HeartRateRecovery
+import com.noop.analytics.calorie.Calories
 import com.noop.data.WorkoutRow
 import java.time.Instant
 import java.time.ZoneId
@@ -164,6 +165,11 @@ fun WorkoutsScreen(vm: AppViewModel) {
     val lastHistorySyncAt by vm.lastHistorySyncAt.collectAsStateWithLifecycle()
     // Cached daily metrics — the Charge side of the post-log activity-cost note (#439).
     val recentDays by vm.recentDays.collectAsStateWithLifecycle()
+    // The same quantity the Today card names, resolved the same way rather than read off the row, so
+    // the two cannot disagree. Re-keyed on the preference, which changes no stored row.
+    val preferOnDeviceCalories = vm.caloriePreferOnDevice()
+    var caloriesByDay by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
+    LaunchedEffect(recentDays, preferOnDeviceCalories) { caloriesByDay = activeCaloriesByDay(vm) }
     var range by remember { mutableStateOf(WorkoutRange.All) }
     // Pick the default range ONCE on first non-empty load; later mutations must not fight a range the
     // user chose. Mirrors macOS, which sets the default only in `.task` / first onAppear.
@@ -312,7 +318,7 @@ fun WorkoutsScreen(vm: AppViewModel) {
             postLogNote?.let { item { PostLogNoteBanner(it) } }
             item { EffortHero(rows = windowRows, effectiveRange = resolved, groups = groups) }
             item { SummarySection(rows = windowRows, effectiveRange = resolved, groups = groups) }
-            item { CalorieHeatmapSection(recentDays) }
+            item { CalorieHeatmapSection(caloriesByDay) }
             item { BreakdownSection(groups = groups, rows = windowRows) }
             item { ZonesSection(windowRows) }
             if (recoveryTrend.isNotEmpty()) {
@@ -799,12 +805,7 @@ private fun HeroStat(title: String, value: String, tint: Color, modifier: Modifi
 // [ActivityHeatmap] (parity with the Swift twin); this composable is just the Compose renderer. Hidden
 // entirely when there's no daily-calorie data yet.
 @Composable
-private fun CalorieHeatmapSection(recentDays: List<com.noop.data.DailyMetric>) {
-    val values = remember(recentDays) {
-        recentDays.mapNotNull { d -> d.activeKcalEst?.let { d.day to it } }
-            .groupBy({ it.first }, { it.second })
-            .mapValues { (_, v) -> v.max() }
-    }
+private fun CalorieHeatmapSection(values: Map<String, Double>) {
     val today = remember { java.time.LocalDate.now().toString() }
     val grid = remember(values, today) { ActivityHeatmap.build(values, today) }
     if (grid.isEmpty) return

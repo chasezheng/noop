@@ -292,9 +292,10 @@ data class GravitySample(
     val synced: Int = 0,
     // The strap's OWN gravity-removed motion magnitude for the same second (`dynamic_acceleration@41`,
     // f32 g) — added by MIGRATION_24_25 (Swift WhoopStore v31). Stored BESIDE the vector, never instead
-    // of it, and read by NOTHING: the sleep stager's motion spine still derives stillness from the 1 Hz
-    // gravity deltas. Nullable REAL, no DEFAULT, so pre-migration rows and every WHOOP 4.0 record read
-    // back null. Declared after `synced` to match the ALTER TABLE column order.
+    // of it: the sleep stager still derives stillness from the 1 Hz gravity deltas, and no sleep,
+    // recovery or strain score reads this column. Nullable with no default, so a pre-migration row and
+    // every strap that reports no dynamic acceleration read back null. Declared after `synced` to
+    // match the ALTER TABLE column order.
     val dynAccel: Double? = null,
 )
 
@@ -328,9 +329,13 @@ data class DailyMetric(
     // positive u16-counter deltas); activity-file imports can fill missing steps from file summaries.
     // APPROXIMATE, not cloud/clinical parity. (#78)
     val steps: Int? = null,
-    // On-device APPROXIMATE whole-day active+resting energy estimate (kcal), computed from HR alone
-    // by AnalyticsEngine (Keytel active + Harris–Benedict BMR). Null when the day has no scored HR
+    // On-device APPROXIMATE whole-day ACTIVE energy estimate (kcal) — the surplus ABOVE resting
+    // metabolism, computed from HR alone by AnalyticsEngine (Keytel active vs Harris–Benedict BMR), or
+    // by HybridModel when the wearer selected the hybrid model. Null when the day has no scored HR
     // window. NOT cloud/clinical parity, a heart-rate estimate. (#78)
+    //
+    // A row written by an older build holds the whole-day total instead, and is repaired by
+    // [com.noop.analytics.CalorieBasisRescore.runIfNeeded]; a day whose raw HR is gone keeps it.
     val activeKcalEst: Double? = null,
     // WHOOP 4.0 raw SpO2 PPG ADC means over detected sleep (v17 columns, #93). The RAW red/IR optical
     // channels banked on the v24 historical layout (spo2_red@68 / spo2_ir@70), NOT a calibrated
@@ -473,7 +478,10 @@ data class ScoreInputProvenanceRow(
  *  from the user's current profile because a waist measurement may have changed since they were scored. */
 enum class Vo2MaxEstimator(val provenanceId: String) {
     NES("nes"),
-    UTH("uth");
+    UTH("uth"),
+
+    /** A value the wearer measured and entered, which outranks either estimator. */
+    MEASURED("measured");
 
     companion object {
         fun fromProvenanceId(value: String?): Vo2MaxEstimator? = entries.firstOrNull {
@@ -481,6 +489,10 @@ enum class Vo2MaxEstimator(val provenanceId: String) {
         }
 
         fun forWaistCm(waistCm: Double): Vo2MaxEstimator = if (waistCm > 0.0) NES else UTH
+
+        /** The method a point was produced by, given the profile that produced it. */
+        fun forProfile(waistCm: Double, vo2maxOverride: Double): Vo2MaxEstimator =
+            if (vo2maxOverride > 0.0) MEASURED else forWaistCm(waistCm)
     }
 }
 
@@ -653,7 +665,7 @@ data class AppleStepHour(
 )
 
 /**
- * PRD-K2: one persisted turn in the AI Coach conversation (Room v37 / MIGRATION_36_37). Swift
+ * PRD-K2: one persisted turn in the AI Coach conversation (Room v39 / MIGRATION_38_39). Swift
  * `coachMessage` (WhoopStore Database.swift `v43-coach-messages` migration). Lets the Coach chat
  * survive relaunch. `orderIndex` (not `createdAt`, which two streamed turns can share to the second)
  * is a monotonically-increasing counter so replay order is exact. `provider` isn't filtered on for

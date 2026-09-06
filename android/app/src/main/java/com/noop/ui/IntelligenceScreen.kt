@@ -477,12 +477,15 @@ private fun sleepValue(totalMin: Double?): String {
  * dashboard merge (mergeDaily), so the badge says so instead of the old hard-coded "NOOP-computed".
  * A computed row's id ends in "-noop"; imports keep their source id ("my-whoop" export, "apple-health" /
  * "health-connect"). Brand wording matches the rest of the app (macOS DaySource: "On-device"/"Whoop"/
- * "Apple Health"); imports use the accent tint, computed rows the charge tint. (Sleep overhaul §2.6.)
+ * "Apple Health"; Health Connect has no macOS case and takes the name every Android label site gives
+ * it); imports use the accent tint, computed rows the charge tint. (Sleep overhaul §2.6.)
  */
 internal fun daySourceBadge(deviceId: String): Pair<String, Color> = when {
     deviceId.endsWith("-noop") -> "On-device" to Palette.chargeColor
-    deviceId == com.noop.data.WhoopRepository.APPLE_HEALTH_SOURCE ||
-        deviceId == com.noop.data.WhoopRepository.HEALTH_CONNECT_SOURCE -> "Apple Health" to Palette.accent
+    deviceId == com.noop.data.WhoopRepository.APPLE_HEALTH_SOURCE -> "Apple Health" to Palette.accent
+    // Health Connect gets its own badge: it is a source of its own, and a badge naming a platform the
+    // phone does not run is wrong.
+    deviceId == com.noop.data.WhoopRepository.HEALTH_CONNECT_SOURCE -> "Health Connect" to Palette.accent
     // An Oura night is persisted under the ring's "oura-<uuid>" id (the ring PROVIDES its own SleepNet
     // hypnogram, banked as the merge-winning session) — name it "Oura", not the generic "Whoop" the
     // else-branch would give a non-"-noop" id. Resolved off the canonical brand table, not an "oura" literal.

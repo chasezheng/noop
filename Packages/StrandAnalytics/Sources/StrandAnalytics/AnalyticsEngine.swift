@@ -15,6 +15,26 @@ import WhoopStore   // OuraRespScale: the one place a ring's milli-bpm respirati
 
 public enum AnalyticsEngine {
 
+    /// The most recent measured resting HR on or before `day`, for a day that staged no sleep of its
+    /// own.
+    ///
+    /// Resting HR changes slowly, so a measurement of any age is preferred to the invented default a
+    /// missing value would otherwise take, which moves both the effort gate and the VO2max estimate.
+    /// Several sources on the winning day are averaged, because they disagree by a few bpm and no
+    /// precedence between them is defensible.
+    ///
+    /// Scoped to energy. A score meant to reflect the night just measured must read that night's own
+    /// resting HR, not a carried-forward one.
+    ///
+    /// `rows` may be in any order and may contain days after `day`. Twin of Kotlin
+    /// `AnalyticsEngine.calorieRestingHR`.
+    public static func calorieRestingHR(rows: [DailyMetric], day: String) -> Double? {
+        let onOrBefore = rows.filter { $0.day <= day && $0.restingHr != nil }
+        guard let latest = onOrBefore.map({ $0.day }).max() else { return nil }
+        let vals = onOrBefore.filter { $0.day == latest }.map { Double($0.restingHr!) }
+        return vals.reduce(0.0, +) / Double(vals.count)
+    }
+
     /// Pair the strap's WRIST_OFF/WRIST_ON events into off-wrist `[start, end)` intervals for the sleep
     /// detector's fractional wear filter (#500; design credited to j0b-dev's #504). Each WRIST_OFF opens
     /// an interval that closes at the next WRIST_ON, or at `windowEnd` if the strap is still off at the
@@ -340,6 +360,14 @@ public enum AnalyticsEngine {
                                   dayHr: [HRSample]? = nil,
                                   daySteps: [StepSample]? = nil,
                                   dayGravity: [GravitySample]? = nil,
+                                  // The activity-day stream, for the calorie estimate alone. It covers
+                                  // the same hours as `dayHr` but stays separate so a caller can hand
+                                  // the estimate a different resolution of the same day. nil falls back
+                                  // to the calendar-day stream, then to the night window.
+                                  calorieHr: [HRSample]? = nil,
+                                  // Resting HR for the calorie estimate when this day staged no sleep
+                                  // of its own. nil keeps the estimator's own default.
+                                  calorieRestingHR: Double? = nil,
                                   // Wear-gated nightly skin-temp mean is harvested here
                                   // (baseline-independent); IntelligenceEngine seeds a personal
                                   // baseline from these means across nights and re-derives
@@ -476,7 +504,12 @@ public enum AnalyticsEngine {
                                   // %HRR with no floor. Threaded rather than read from a global so this
                                   // stays a pure function, and defaulted so every existing caller and
                                   // test is byte-identical.
-                                  effortMethod: StrainScorer.Method = .edwards) -> DayResult {
+                                  effortMethod: StrainScorer.Method = .edwards,
+                                  // Wall-clock now (epoch s), bounding how much of this day has
+                                  // elapsed for the basal term of the calorie estimate. A past day
+                                  // elapses in full; an in-progress one only up to `nowTs`, so the
+                                  // figure climbs through the day. nil takes the whole window.
+                                  nowTs: Int? = nil) -> DayResult {
 
         // Precompute the day's UTC bounds ONCE (#996). `dayString(ts, offsetSec:)` formats the UTC
         // calendar day of (ts + offset) with a FIXED offset, so "== day" is exactly membership in
@@ -935,10 +968,28 @@ public enum AnalyticsEngine {
         // (dayString(ts, tzOffset)) so it agrees with the bucket (#277). Fall back to the
         // night-window hr for pure-function callers that don't supply dayHr. Strain keeps the full
         // window (bounded log).
-        let dayHrFiltered = (dayHr ?? hr).filter { tsInDay($0.ts) }
-        let activeKcalEst: Double? = dayHrFiltered.isEmpty ? nil : Calories.estimateDayCalories(
+        // One window for every calorie model, so switching models changes the method and not the day
+        // boundary. It is in true epoch seconds, unlike the shifted coordinates `tsInDay` works in.
+        let calorieWindow = MetCalories.dayWindowUtc(localMidnightUtc: dayStartUtc - tzOffsetSeconds)
+        let dayHrFiltered = (calorieHr ?? dayHr ?? hr)
+            .filter { $0.ts >= calorieWindow.start && $0.ts < calorieWindow.end }
+        // Basal accrues on the wall clock rather than per sample: resting metabolism is true for
+        // every second whether or not a sample landed, so a sparse or unworn stretch cannot collapse
+        // it. Read off `calorieWindow`, so basal covers exactly the hours the active term was scored
+        // over. nil leaves the estimator its sample-derived fallback.
+        let dayBmrSpanS: Double? = nowTs.map { (now: Int) -> Double in
+            max(0.0, Double(min(now, calorieWindow.end) - calorieWindow.start))
+        }
+        // The active term alone, so this is comparable with the active energy Apple Health and Health
+        // Connect write under the same key. nil when the day has no HR at all: a day the strap never
+        // observed gets no number rather than a full day of basal, which would otherwise be
+        // backfilled onto days before the user owned the strap.
+        // The day's own resting HR when it has one; a resolved cross-source value only when it does not.
+        let effCalorieRestingHR = restingHRDaily.map(Double.init) ?? calorieRestingHR
+        let activeKcalEst: Double? = dayHrFiltered.isEmpty ? nil : Calories.estimateDayEnergy(
             dayHrFiltered, profile: profile, hrmax: effMaxHR,
-            restingHR: restingHRDaily.map(Double.init))
+            restingHR: effCalorieRestingHR,
+            bmrSpanS: dayBmrSpanS).activeKcal
 
         // ── Assemble DailyMetric ──────────────────────────────────────────────
         let daily = DailyMetric(

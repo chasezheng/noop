@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material.icons.filled.WaterDrop
+import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.ui.graphics.vector.ImageVector
 import org.json.JSONArray
 import com.noop.R
@@ -59,6 +60,10 @@ enum class DashboardCard(
     SKIN_TEMP("skinTemp", R.string.today_card_skin_temp, R.string.today_card_skin_temp_subtitle, "", Icons.Filled.Thermostat),
     SLEEP("sleep", R.string.today_card_sleep, R.string.today_card_sleep_subtitle, "", Icons.Filled.Bedtime),
     CALORIES("calories", R.string.today_card_calories, R.string.today_card_calories_subtitle, "kcal", Icons.Filled.LocalFireDepartment),
+
+    // Active energy plus resting metabolism. Separate from CALORIES because the two are different
+    // quantities. Off by default, so a fresh install keeps the dashboard it already had.
+    TOTAL_ENERGY("totalEnergy", R.string.today_card_total_energy, R.string.today_card_total_energy_subtitle, "kcal", Icons.Filled.Whatshot),
     HYDRATION("hydration", R.string.today_card_hydration, R.string.today_card_hydration_subtitle, "", Icons.Filled.LocalDrink),
 
     // Optional, default-OFF (task #43): a tap-through to the Coupled view (the WHOOP-style day read). Unlike
