@@ -210,6 +210,104 @@ class DynamicHrrSignalsTest {
         assertEquals(70.0, out[6], 0.0)
     }
 
+    /**
+     * The 240 seconds the block-end tests share: a 79 bpm plateau from second 120, one 300 bpm
+     * reading at second 135, and a 150 bpm plateau from second 140. [edge] fills seconds 0..119.
+     *
+     * Second 135 says where the first block ended. A first block that stops on the grid at 119
+     * leaves that reading in a block of mostly 150, whose ninetieth percentile is 150 and which
+     * therefore keeps it at 150. A first block that runs to 139 ranks it against a hundred seconds
+     * of 60 instead, whose ninetieth percentile is 79.
+     */
+    private fun blockEndValues(edge: (Int) -> Double): DoubleArray = DoubleArray(240) { i ->
+        when {
+            i < 120 -> edge(i)
+            i == 135 -> 300.0
+            i < 140 -> 79.0
+            else -> 150.0
+        }
+    }
+
+    @Test
+    fun clipBlockPeaks_endsABlockOnTheGridWhenTheSecondsBeforeItVaryAroundOneLevel() {
+        val values = blockEndValues { 60.0 + it % 3 }
+
+        val out = DynamicHrrSignals.clipBlockPeaks(
+            values, listOf(0..239), windowStartUtc = 0L, blockS = 120, percentile = 0.90,
+        )
+
+        assertEquals(150.0, out[135], 0.0)
+    }
+
+    @Test
+    fun clipBlockPeaks_movesABlockEndPastSecondsThatAreStillClimbing() {
+        // Seconds 100..119 climb one bpm a second, which carries the end to 139. There the twenty
+        // seconds behind it are the flat plateau, which moves nowhere as a whole, and it stops.
+        val values = blockEndValues { if (it < 100) 60.0 else 60.0 + (it - 100) }
+
+        val out = DynamicHrrSignals.clipBlockPeaks(
+            values, listOf(0..239), windowStartUtc = 0L, blockS = 120, percentile = 0.90,
+        )
+
+        assertEquals(79.0, out[135], 0.0)
+    }
+
+    @Test
+    fun clipBlockPeaks_leavesABlockEndAloneWhenTheSecondsBeforeItHaveAHole() {
+        // The same climb, with second 110 unread. What happened across an unread second is not
+        // known, so the end stays on the grid.
+        val values = blockEndValues { if (it < 100) 60.0 else 60.0 + (it - 100) }
+        values[110] = Double.NaN
+
+        val out = DynamicHrrSignals.clipBlockPeaks(
+            values, listOf(0..239), windowStartUtc = 0L, blockS = 120, percentile = 0.90,
+        )
+
+        assertEquals(150.0, out[135], 0.0)
+    }
+
+    @Test
+    fun clipBlockPeaks_leavesTheEndOfABlockShorterThanNinetySecondsAlone() {
+        // The same climb, but the strap went on at second 60, so the first block holds sixty
+        // seconds. Its end does not move however hard the seconds before it are climbing.
+        val values = blockEndValues { if (it < 100) 60.0 else 60.0 + (it - 100) }
+
+        val out = DynamicHrrSignals.clipBlockPeaks(
+            values, listOf(60..239), windowStartUtc = 0L, blockS = 120, percentile = 0.90,
+        )
+
+        assertEquals(150.0, out[135], 0.0)
+    }
+
+    @Test
+    fun clipBlockPeaks_extendsABlockNoFurtherThanTenMinutes() {
+        // One bpm a second for fifteen minutes: the seconds behind the end never settle, so nothing
+        // but the ten-minute limit stops it. The first block is 0..599 and the ninetieth percentile
+        // of its 600 readings is the one at second 539, 599, so second 599 is pulled from 659 down
+        // to it. A block that had run on to the end of the session would have left it at 659.
+        val values = DoubleArray(900) { 60.0 + it }
+
+        val out = DynamicHrrSignals.clipBlockPeaks(
+            values, listOf(0..899), windowStartUtc = 0L, blockS = 300, percentile = 0.90,
+        )
+
+        assertEquals(599.0, out[599], 0.0)
+        assertEquals(929.0, out[899], 0.0)
+    }
+
+    @Test
+    fun clipBlockPeaks_movesABlockEndNoFurtherThanTheSession() {
+        // The same climb, over a session that ends eleven seconds past the grid boundary. The one
+        // block is 0..130, whose ninetieth percentile is the reading at second 117, 177.
+        val values = DoubleArray(131) { 60.0 + it }
+
+        val out = DynamicHrrSignals.clipBlockPeaks(
+            values, listOf(0..130), windowStartUtc = 0L, blockS = 120, percentile = 0.90,
+        )
+
+        assertEquals(177.0, out[130], 0.0)
+    }
+
     // ── Trailing smoothers ────────────────────────────────────────────────────────────────────
 
     @Test
@@ -344,11 +442,11 @@ class DynamicHrrSignalsTest {
         hrRangeBpm: Double = 10.0,
         stillFrac: Double = 0.8,
         beatFrac: Double = 0.5,
-        repairGraceS: Int = 0,
-    ): DoubleArray = DynamicHrrSignals.quietWindowMinHr(
+        minGracePeriod: Int = 0,
+    ): DoubleArray = DynamicHrrSignals.quietWindows(
         hr, listOf(0..hr.size - 1), still, beat, minWindowS, hrRangeBpm, stillFrac, beatFrac,
-        repairGraceS,
-    )
+        minGracePeriod,
+    ).lowestHrAtWindowEnd
 
     @Test
     fun quietWindow_reportsTheLowestHeartRateOfAQualifyingStretch() {
@@ -408,7 +506,7 @@ class DynamicHrrSignalsTest {
     }
 
     @Test
-    fun quietWindow_rejectsAStretchTheRateHasRisenAwayFrom() {
+    fun quietWindow_rejectsAStretchTheRateHasClimbedTooFarAbove() {
         // The last second reads 90, far above the 50s behind it, so what they measured is a rate the
         // wearer has left. Nothing wide enough is left to report.
         val hr = doubleArrayOf(50.0, 51.0, 52.0, 53.0, 90.0)
@@ -419,7 +517,7 @@ class DynamicHrrSignalsTest {
     }
 
     @Test
-    fun quietWindow_closesWhereTheRateHasRisenAwayFromTheLowestBehindIt() {
+    fun quietWindow_closesWhereTheRateHasClimbedTooFarAboveTheLowestBehindIt() {
         // Second 5 reads 61, eleven above the 50s behind it. The stretch behind it closes and reports
         // the 50 it measured; the new one needs five seconds of its own before it can report 61.
         val hr = doubleArrayOf(50.0, 50.0, 50.0, 50.0, 50.0, 61.0, 61.0, 61.0, 61.0, 61.0)
@@ -486,7 +584,7 @@ class DynamicHrrSignalsTest {
         val still = BooleanArray(50) { it >= 5 }
 
         val ends = quietWindows(
-            hr, still, BooleanArray(50) { true }, minWindowS = 10, stillFrac = 0.9, repairGraceS = 60,
+            hr, still, BooleanArray(50) { true }, minWindowS = 10, stillFrac = 0.9, minGracePeriod = 60,
         )
 
         assertEquals(55.0, ends[49], 0.0)
@@ -502,7 +600,7 @@ class DynamicHrrSignalsTest {
         val still = BooleanArray(50) { it >= 5 }
 
         val ends = quietWindows(
-            hr, still, BooleanArray(50) { true }, minWindowS = 10, stillFrac = 0.9, repairGraceS = 10,
+            hr, still, BooleanArray(50) { true }, minWindowS = 10, stillFrac = 0.9, minGracePeriod = 10,
         )
 
         assertEquals(60.0, ends[49], 0.0)
@@ -518,7 +616,7 @@ class DynamicHrrSignalsTest {
         val still = BooleanArray(60) { it != 20 && it != 40 }
 
         val ends = quietWindows(
-            hr, still, BooleanArray(60) { true }, minWindowS = 10, stillFrac = 0.99, repairGraceS = 3,
+            hr, still, BooleanArray(60) { true }, minWindowS = 10, stillFrac = 0.99, minGracePeriod = 3,
         )
 
         assertEquals(55.0, ends[59], 0.0)
@@ -543,7 +641,7 @@ class DynamicHrrSignalsTest {
         val hr = doubleArrayOf(52.0, 50.0, 54.0, 51.0, 53.0)
         val still = booleanArrayOf(false, true, true, true, true)
 
-        val ends = quietWindows(hr, still, BooleanArray(5) { true }, repairGraceS = 5)
+        val ends = quietWindows(hr, still, BooleanArray(5) { true }, minGracePeriod = 5)
 
         assertEquals(50.0, ends[4], 0.0)
     }
@@ -565,11 +663,11 @@ class DynamicHrrSignalsTest {
         // carried its left edge across the silence would report 45 at the last second instead of 50.
         val hr = doubleArrayOf(45.0, 45.0, 45.0, 45.0, 45.0, 52.0, 50.0, 54.0, 51.0, 53.0)
 
-        val ends = DynamicHrrSignals.quietWindowMinHr(
+        val ends = DynamicHrrSignals.quietWindows(
             hr, listOf(0..4, 5..9), BooleanArray(10) { true }, BooleanArray(10) { true },
             minWindowS = 5, hrRangeBpm = 10.0, stillFrac = 0.8, beatFrac = 0.5,
-            repairGraceS = 0,
-        )
+            minGracePeriod = 0,
+        ).lowestHrAtWindowEnd
 
         assertEquals(45.0, ends[4], 0.0)
         assertEquals(50.0, ends[9], 0.0)
@@ -607,11 +705,11 @@ class DynamicHrrSignalsTest {
         // rate left behind by the session before it.
         val hr = doubleArrayOf(60.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN)
 
-        val ends = DynamicHrrSignals.quietWindowMinHr(
+        val ends = DynamicHrrSignals.quietWindows(
             hr, listOf(0..0, 1..5), BooleanArray(6) { true }, BooleanArray(6) { true },
             minWindowS = 5, hrRangeBpm = 10.0, stillFrac = 0.8, beatFrac = 0.5,
-            repairGraceS = 0,
-        )
+            minGracePeriod = 0,
+        ).lowestHrAtWindowEnd
 
         assertTrue(ends.all { it.isNaN() })
     }
@@ -622,13 +720,116 @@ class DynamicHrrSignalsTest {
         // they read. Each half alone is too short to qualify.
         val hr = doubleArrayOf(52.0, 50.0, 54.0, 51.0, 53.0, 52.0)
 
-        val ends = DynamicHrrSignals.quietWindowMinHr(
+        val ends = DynamicHrrSignals.quietWindows(
             hr, listOf(0..2, 3..5), BooleanArray(6) { true }, BooleanArray(6) { true },
             minWindowS = 5, hrRangeBpm = 10.0, stillFrac = 0.8, beatFrac = 0.5,
-            repairGraceS = 0,
-        )
+            minGracePeriod = 0,
+        ).lowestHrAtWindowEnd
 
         assertTrue(ends.all { it.isNaN() })
+    }
+
+    // ── Competing candidates ──────────────────────────────────────────────────────────────────
+
+    @Test
+    fun quietWindow_measuresPastAnInterruptionFromAStretchThatBeganAfterIt() {
+        // Seconds 2 and 5 are not still. One stretch running from second 0 carries both, so its
+        // share never climbs back and it last qualifies at second 4. The stretch begun after second
+        // 2 carries only one of them, and is still qualifying at second 7.
+        //
+        // Both measure 50, since the older stretch contains the newer one and so can never read
+        // higher. The tie is what decides it, and the later stretch wins it.
+        val hr = DoubleArray(8) { 50.0 }
+        val still = booleanArrayOf(true, true, false, true, true, false, true, true)
+
+        val ends = quietWindows(hr, still, BooleanArray(8) { true }, minWindowS = 4)
+
+        assertEquals(50.0, ends[7], 0.0)
+        assertTrue(ends[4].isNaN())
+    }
+
+    @Test
+    fun quietWindow_reportsOnlyTheLowerOfTwoOverlappingStretches() {
+        // The same interruptions, over a rate that steps up at second 3. The stretch from second 0
+        // measured 50 and the one from second 3 measured 60, and their seconds overlap, so only the
+        // 50 is reported — at the second it was measured, not at the later stretch's end.
+        val hr = doubleArrayOf(50.0, 50.0, 50.0, 60.0, 60.0, 60.0, 60.0, 60.0)
+        val still = booleanArrayOf(true, true, false, true, true, false, true, true)
+
+        val ends = quietWindows(hr, still, BooleanArray(8) { true }, minWindowS = 4)
+
+        assertEquals(50.0, ends[4], 0.0)
+        assertTrue(ends[7].isNaN())
+    }
+
+    @Test
+    fun quietWindow_reportsBothStretchesWhereTheirMeasuredSecondsDoNotOverlap() {
+        // Second 6 reads 70, twenty above the 50s behind it, so the first stretch ends there and the
+        // next begins at that second. Neither shares a second with the other, so neither suppresses
+        // the other however far apart the two rates are.
+        val hr = DoubleArray(13) { if (it < 6) 50.0 else 70.0 }
+
+        val ends = quietWindows(hr, BooleanArray(13) { true }, BooleanArray(13) { true })
+
+        assertEquals(50.0, ends[5], 0.0)
+        assertEquals(70.0, ends[12], 0.0)
+    }
+
+    @Test
+    fun quietWindow_doesNotEndAShortStretchOnAPauseInsideTheFloor() {
+        // Seconds 4 and 5 are not still. Four still seconds behind them cannot dilute two bad ones
+        // back over a 0.9 share for another fourteen seconds, so without the floor the stretch would
+        // need longer to recover than it had run and would end. The floor holds it open, and it
+        // qualifies again at second 19 — leaving one measurement where two would otherwise stand.
+        val hr = DoubleArray(20) { 50.0 }
+        val still = BooleanArray(20) { it != 4 && it != 5 }
+
+        val ends = quietWindows(hr, still, BooleanArray(20) { true }, minWindowS = 4, stillFrac = 0.9, minGracePeriod = 30)
+
+        assertEquals(50.0, ends[19], 0.0)
+        assertTrue(ends[3].isNaN())
+    }
+
+    @Test
+    fun quietWindow_endsThatShortStretchWhereThereIsNoFloor() {
+        // The same input with no floor: the stretch from second 0 ends at second 4 and reports the
+        // four seconds it had, and the stretch begun at second 6 reports the rest.
+        val hr = DoubleArray(20) { 50.0 }
+        val still = BooleanArray(20) { it != 4 && it != 5 }
+
+        val ends = quietWindows(hr, still, BooleanArray(20) { true }, minWindowS = 4, stillFrac = 0.9)
+
+        assertEquals(50.0, ends[3], 0.0)
+        assertEquals(50.0, ends[19], 0.0)
+    }
+
+    @Test
+    fun quietWindow_keepsAStretchBornOnASecondThatCarriedNoBeat() {
+        // Second 5 reads 70, twenty above the 50s behind it, so a stretch begins there — on a second
+        // carrying no beat, which puts its beat share at zero of one. It needs exactly one further
+        // second to recover, which is exactly what it has run, so it survives and recovers on the
+        // next beat. Ending it instead would begin its replacement a second later, one short of the
+        // sixteen asked for, and this measurement would not exist.
+        val hr = DoubleArray(21) { if (it < 5) 50.0 else 70.0 }
+        val beat = BooleanArray(21) { it != 5 }
+
+        val ends = quietWindows(hr, BooleanArray(21) { true }, beat, minWindowS = 16)
+
+        assertEquals(70.0, ends[20], 0.0)
+    }
+
+    @Test
+    fun quietWindow_measuresNothingFromStretchesBornIntoContinuingMotion() {
+        // Ten seconds of motion start a stretch after each of them, and every one of those is born
+        // not still. None reports: only the stretch before the motion and the one after it do.
+        val hr = DoubleArray(20) { 50.0 }
+        val still = BooleanArray(20) { it < 5 || it >= 15 }
+
+        val ends = quietWindows(hr, still, BooleanArray(20) { true }, minWindowS = 4)
+
+        assertEquals(50.0, ends[5], 0.0)
+        assertEquals(50.0, ends[19], 0.0)
+        assertTrue((6..18).all { ends[it].isNaN() })
     }
 
     // ── The basal heart rate through the day ──────────────────────────────────────────────────
@@ -780,11 +981,11 @@ class DynamicHrrSignalsTest {
     /** The three stages that decide a raise, wired as the model wires them. */
     private fun foldBasal(hr: DoubleArray, seedBpm: Double): Pair<DoubleArray, DoubleArray> {
         val sessions = listOf(0..(hr.size - 1))
-        val quiet = DynamicHrrSignals.quietWindowMinHr(
+        val quiet = DynamicHrrSignals.quietWindows(
             hr, sessions, BooleanArray(hr.size) { true }, BooleanArray(hr.size) { true },
             minWindowS = 300, hrRangeBpm = 10.0, stillFrac = 0.98, beatFrac = 0.5,
-            repairGraceS = 300,
-        )
+            minGracePeriod = 300,
+        ).lowestHrAtWindowEnd
         val ratchet = DynamicHrrSignals.trailingMedian(hr, sessions, widthS = 30, minSamples = 20)
         val basal = DynamicHrrSignals.trackBasalHr(quiet, ratchet, seedBpm)
         return basal to DynamicHrrSignals.smoothBasalRaises(basal, quiet, hr)

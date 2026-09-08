@@ -186,16 +186,54 @@ def hampel(values, sessions, radius_s, sigmas):
     return out
 
 
+# How many seconds at a block's end decide whether that end sits inside one rise or fall.
+PEAK_EDGE_PROBE_S = 20
+# How many seconds a block's end is extended by each time those seconds say it sits inside one.
+PEAK_EDGE_STEP_S = 5
+# The shortest block whose end is extended at all.
+PEAK_EDGE_MIN_BLOCK_S = 90
+# The longest a block may be extended to. A block already this long is not extended.
+PEAK_MAX_BLOCK_S = 600
+
+
 def clip_block_peaks(values, sessions, window_start_utc, block_s, percentile):
     out = list(values)
     for session in sessions:
         block_start = session[0]
         while block_start <= session[1]:
             block_last = ((window_start_utc + block_start) // block_s + 1) * block_s - window_start_utc - 1
-            block_end = min(session[1], block_last)
+            grid_end = min(session[1], block_last)
+            block_end = _extended_block_end(values, block_start, grid_end, session[1])
             _clip_block(values, out, block_start, block_end, percentile)
             block_start = block_end + 1
     return out
+
+
+def _extended_block_end(values, block_start, grid_end, session_last):
+    """The grid end extended while the seconds ending at it are still on one course."""
+    if grid_end - block_start + 1 < PEAK_EDGE_MIN_BLOCK_S:
+        return grid_end
+    # max, because a block the grid already made longer than the limit is left as it is.
+    furthest = min(session_last, max(grid_end, block_start + PEAK_MAX_BLOCK_S - 1))
+    end = grid_end
+    while end < furthest and _edge_is_on_one_course(values, end):
+        end = min(furthest, end + PEAK_EDGE_STEP_S)
+    return end
+
+
+def _edge_is_on_one_course(values, end):
+    """Whether the seconds ending at `end` moved further as a whole than twice their mean absolute deviation."""
+    start = end - PEAK_EDGE_PROBE_S + 1
+    total = 0.0
+    for i in range(start, end + 1):
+        if math.isnan(values[i]):
+            return False
+        total += values[i]
+    mean = total / PEAK_EDGE_PROBE_S
+    spread = 0.0
+    for i in range(start, end + 1):
+        spread += abs(values[i] - mean)
+    return abs(values[end] - values[start]) > 2.0 * (spread / PEAK_EDGE_PROBE_S)
 
 
 def _clip_block(values, out, block_start, block_end, percentile):

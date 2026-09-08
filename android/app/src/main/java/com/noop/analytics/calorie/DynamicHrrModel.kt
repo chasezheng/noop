@@ -45,6 +45,25 @@ class DynamicHrrModel(
 
         /** [CalorieTimeline.labeledSeries]: the percentage of the minute's energy that came from fat. */
         const val FAT_PERCENTAGE: String = "fatPercentage"
+
+        /**
+         * [CalorieTimeline.labeledSeries]: quiet stretches still qualifying but not yet long enough
+         * to measure a rate, at the busiest second of the minute.
+         *
+         * The four counts below say what the basal-rate search was carrying, which is otherwise
+         * invisible: the day states only how many stretches finished. They are maxima over the
+         * minute rather than means, because what they answer is how many stood at once.
+         */
+        const val LIVE_CANDIDATES: String = "liveCandidates"
+
+        /** [CalorieTimeline.labeledSeries]: the same for stretches whose shares have fallen under. */
+        const val PAUSED_CANDIDATES: String = "pausedCandidates"
+
+        /** [CalorieTimeline.labeledSeries]: stretches long enough to measure a rate, still qualifying. */
+        const val LIVE_WINDOWS: String = "liveWindows"
+
+        /** [CalorieTimeline.labeledSeries]: stretches long enough to measure a rate, now paused. */
+        const val PAUSED_WINDOWS: String = "pausedWindows"
     }
 
     /** The [CalorieTimeline.extras] keys this model writes. */
@@ -85,9 +104,9 @@ class DynamicHrrModel(
      * lead-in is then left unscored rather than anchored on a fabricated rate.
      */
     private val seedBasalHrBpm: Double =
-        vitals.restingHR?.plus(setting.basalHrSeedOffsetBpm) ?: Double.NaN
+        vitals.restingHR?.plus(setting.basalSeedOffsetBpm) ?: Double.NaN
 
-    private val basalFat = BasalFatCurve(setting)
+    private val restingFat = RestingFatCurve(setting)
     private val activeFat = ActiveFatCurve(
         HrZones.zones(maxHR = hrmax, customLowerBounds = profile.hrZoneThresholds),
         setting,
@@ -103,8 +122,8 @@ class DynamicHrrModel(
         HrReserveRamp.of(vitals.restingHR, setting.reserveRampBandBpm)
 
     /** Resting energy per second: the wearer's measured figure, or the estimate every model uses. */
-    private val basalKcalPerS: Double =
-        if (setting.measuredBasalKcalDay > 0.0) setting.measuredBasalKcalDay / 86_400.0 else body.restingRate
+    private val restingKcalPerS: Double =
+        if (setting.restingEnergyKcalPerDay > 0.0) setting.restingEnergyKcalPerDay / 86_400.0 else body.restingRate
 
     /**
      * The cost of each minute of `[startUtc, endUtc)`. Pure.
@@ -157,31 +176,32 @@ class DynamicHrrModel(
             beat[(ts - startUtc).toInt()] = true
         }
 
-        val filtered = DynamicHrrSignals.hampel(filled, sessions, setting.hampelRadiusS, setting.hampelSigmas)
-        val settled = if (!setting.suppressPeaks) {
+        val filtered = DynamicHrrSignals.hampel(filled, sessions, setting.spikeWindowRadiusS, setting.spikeThresholdSigmas)
+        val settled = if (!setting.peakClipEnabled) {
             filtered
         } else {
             DynamicHrrSignals.clipBlockPeaks(
-                filtered, sessions, startUtc, setting.peakBlockS, setting.peakPercentile,
+                filtered, sessions, startUtc, setting.peakClipBlockS, setting.peakClipKeptFrac,
             )
         }
 
         val smoothedMotion = DynamicHrrSignals.trailingMean(
-            motion, sessions, setting.motionSmoothS, MOTION_SMOOTH_MIN_SAMPLES,
+            motion, sessions, setting.stillSmoothingS, STILL_SMOOTHING_MIN_SAMPLES,
         )
         val still = BooleanArray(seconds) {
-            !smoothedMotion[it].isNaN() && smoothedMotion[it] <= setting.motionStillG
+            !smoothedMotion[it].isNaN() && smoothedMotion[it] <= setting.stillMaxG
         }
         // Read before the peaks are clipped, not after: clipping only lowers the high readings, so a
         // stretch broken by a spike would be handed the spike already pulled down, and would qualify
         // as quiet rather than being cut back at it.
-        val quietWindowHr = DynamicHrrSignals.quietWindowMinHr(
+        val quiet = DynamicHrrSignals.quietWindows(
             filtered, sessions, still, beat,
-            setting.basalMinWindowS, setting.basalHrRangeBpm,
-            setting.basalStillFrac, setting.basalBeatCoverageFrac, BASAL_REPAIR_GRACE_S,
+            setting.quietStretchMinLengthS, setting.quietStretchMaxRiseBpm,
+            setting.quietStretchMinStillFrac, setting.quietStretchMinBeatFrac, MIN_GRACE_PERIOD,
         )
+        val quietWindowHr = quiet.lowestHrAtWindowEnd
         val ratchetHr = DynamicHrrSignals.trailingMedian(
-            settled, sessions, setting.restSmoothS, setting.restSmoothMinSamples,
+            settled, sessions, setting.basalLowerWindowS, setting.basalLowerMinSamples,
         )
         val basalHr = DynamicHrrSignals.smoothBasalRaises(
             DynamicHrrSignals.trackBasalHr(quietWindowHr, ratchetHr, seedBasalHrBpm),
@@ -195,7 +215,7 @@ class DynamicHrrModel(
         // neither a measurement nor a seed has nothing to anchor on.
         if (quietWindows == 0 && seedBasalHrBpm.isNaN()) return declined(startUtc, endUtc, coverage)
 
-        return fold(startUtc, endUtc, filled, settled, basalHr, coverage, quietWindows)
+        return fold(startUtc, endUtc, filled, settled, basalHr, coverage, quietWindows, quiet)
     }
 
     override fun timeline(day: ActivityDay, inputs: CalorieInputs): CalorieTimeline {
@@ -218,6 +238,7 @@ class DynamicHrrModel(
         basalHr: DoubleArray,
         hrCoverageFrac: Double,
         quietWindows: Int,
+        quiet: DynamicHrrSignals.QuietWindows,
     ): CalorieTimeline {
         val minutes = minuteCount(startUtc, endUtc)
         val activeKcal = DoubleArray(minutes)
@@ -226,15 +247,27 @@ class DynamicHrrModel(
         val deltaHrSum = DoubleArray(minutes)
         val deltaHrCount = IntArray(minutes)
         val minuteBasalHr = DoubleArray(minutes) { Double.NaN }
+        val busiest = List(4) { IntArray(minutes) }
+        val perSecondCounts = listOf(
+            quiet.liveCandidates, quiet.pausedCandidates, quiet.liveWindows, quiet.pausedWindows,
+        )
         val vo2max = vo2maxLPerMin ?: 0.0
         var finalBasalHr = Double.NaN
 
+        // The resting fuel mix is read from the local hour, which [localHourAt] resolves to the
+        // minute, so these three hold for every second of a minute and are read once for each.
+        var minuteRead = -1
+        var fatShareOfResting = 0.0
+        var restingVo2LPerMin = 0.0
         for (i in hr.indices) {
             val minute = i / 60
-            val fatShareOfBasal = basalFat.fractionAt(localHourAt(i))
-            // Resting energy is fixed; what moves is the oxygen it takes to deliver it, since fat
-            // costs more oxygen per kcal than carbohydrate does.
-            val basalVo2LPerMin = basalKcalPerS * 60.0 / FuelMix.kcalPerLitreO2(fatShareOfBasal)
+            if (minute != minuteRead) {
+                minuteRead = minute
+                fatShareOfResting = restingFat.fractionAt(localHourAt(i))
+                // Resting energy is fixed; what moves is the oxygen it takes to deliver it, since
+                // fat costs more oxygen per kcal than carbohydrate does.
+                restingVo2LPerMin = restingKcalPerS * 60.0 / FuelMix.kcalPerLitreO2(fatShareOfResting)
+            }
             var activeThisSecond = 0.0
             var fatShareOfActive = 0.0
             val bpm = hr[i]
@@ -250,14 +283,18 @@ class DynamicHrrModel(
                 val reserve = reserveRamp?.excess(anchor, hrmax) ?: (hrmax - anchor)
                 val above = reserveRamp?.excess(anchor, bpm) ?: (bpm - anchor)
                 val fraction = if (reserve > 0.0) (above / reserve).coerceIn(0.0, 1.0) else 0.0
-                val activeVo2LPerMin = maxOf(0.0, fraction * (vo2max - basalVo2LPerMin))
+                val activeVo2LPerMin = maxOf(0.0, fraction * (vo2max - restingVo2LPerMin))
                 fatShareOfActive = activeFat.fractionAt(bpm)
                 activeThisSecond = activeVo2LPerMin * FuelMix.kcalPerLitreO2(fatShareOfActive) / 60.0
             }
             activeKcal[minute] += activeThisSecond
-            totalKcal[minute] += basalKcalPerS + activeThisSecond
-            fatKcal[minute] += basalKcalPerS * fatShareOfBasal + activeThisSecond * fatShareOfActive
+            totalKcal[minute] += restingKcalPerS + activeThisSecond
+            fatKcal[minute] += restingKcalPerS * fatShareOfResting + activeThisSecond * fatShareOfActive
             if (!anchor.isNaN()) minuteBasalHr[minute] = anchor
+            for (which in busiest.indices) {
+                val atThisSecond = perSecondCounts[which][i]
+                if (atThisSecond > busiest[which][minute]) busiest[which][minute] = atThisSecond
+            }
         }
 
         var dayTotalKcal = 0.0
@@ -294,6 +331,10 @@ class DynamicHrrModel(
                 Label.DELTA_HR to deltaHr,
                 Label.BASAL_HR to minuteBasalHr.map { if (it.isNaN()) null else it },
                 Label.FAT_PERCENTAGE to fatPercentage,
+                Label.LIVE_CANDIDATES to busiest[0].map { it.toDouble() },
+                Label.PAUSED_CANDIDATES to busiest[1].map { it.toDouble() },
+                Label.LIVE_WINDOWS to busiest[2].map { it.toDouble() },
+                Label.PAUSED_WINDOWS to busiest[3].map { it.toDouble() },
             ),
             extras = extras,
         )
@@ -307,7 +348,7 @@ class DynamicHrrModel(
         for (m in 0 until minutes) {
             val minuteStart = startUtc + m * 60L
             tsIndex[m] = minuteStart
-            totalKcal[m] = basalKcalPerS * (minOf(minuteStart + 60L, endUtc) - minuteStart)
+            totalKcal[m] = restingKcalPerS * (minOf(minuteStart + 60L, endUtc) - minuteStart)
         }
         val empty = arrayOfNulls<Double>(minutes).toList()
         return CalorieTimeline(
@@ -319,6 +360,10 @@ class DynamicHrrModel(
                 Label.DELTA_HR to empty,
                 Label.BASAL_HR to empty,
                 Label.FAT_PERCENTAGE to empty,
+                Label.LIVE_CANDIDATES to empty,
+                Label.PAUSED_CANDIDATES to empty,
+                Label.LIVE_WINDOWS to empty,
+                Label.PAUSED_WINDOWS to empty,
             ),
             // The fuel split is absent rather than zero: the day still books resting energy, and
             // zero grams beside a non-zero total would assert that none of it came from anywhere.
@@ -339,7 +384,7 @@ class DynamicHrrModel(
             if (hr[i].isNaN()) continue
             if (first < 0) {
                 first = i
-            } else if (i - previous > setting.sessionGapS) {
+            } else if (i - previous > setting.wearSessionMaxSilenceS) {
                 out.add(first..previous)
                 first = i
             }
@@ -375,17 +420,18 @@ class DynamicHrrModel(
          *
          * Below this a single sample would decide a whole window's stillness.
          */
-        const val MOTION_SMOOTH_MIN_SAMPLES: Int = 3
+        const val STILL_SMOOTHING_MIN_SAMPLES: Int = 3
 
         /**
-         * How long a quiet stretch's still and beat shares may sit under their thresholds before the
-         * stretch is closed.
+         * How many seconds a quiet stretch's still and beat fractions may sit under their thresholds
+         * before the stretch is judged on whether it can still recover.
          *
-         * A share is diluted by the seconds after it, so a brief disturbance repairs itself given a
-         * little time. Long enough that turning over in bed does not end a restful hour, short enough
-         * that getting up does.
+         * Past this the stretch ends as soon as it would need more further qualifying seconds to
+         * recover than it has already run, a tolerance that scales with how long the stretch is. This
+         * grace is what a short stretch has instead, so a moment's noise does not end one that has
+         * barely begun.
          */
-        const val BASAL_REPAIR_GRACE_S: Int = 300
+        const val MIN_GRACE_PERIOD: Int = 30
 
         /**
          * The longest silence, in seconds, that is filled from the readings around it.
@@ -410,130 +456,214 @@ class DynamicHrrModel(
  */
 data class DynamicHrrModelSetting(
 
-    /** Silence longer than this many seconds starts a new wear session. */
-    val sessionGapS: Int = 1_800,
+    /**
+     * A silence this long in the heart-rate stream, or longer, ends one wear session and starts
+     * the next.
+     *
+     * Sessions bound every later stage: a quiet stretch never spans two, and coverage is measured
+     * inside them. Shorter cuts a night with brief dropouts into pieces too short to measure a
+     * basal rate.
+     */
+    val wearSessionMaxSilenceS: Int = 1_800,
 
     /**
-     * The least share of a wear session's seconds that must carry a heart rate for the day to be
-     * estimated.
+     * The share of the wear sessions' seconds that must carry a heart rate before the day is
+     * estimated above resting.
      *
-     * The model works per second and never fills the gap between two samples. Offloaded records
-     * arrive at one sample a second; a live Bluetooth stream arrives about every thirty, which is far
-     * below any usable value here.
+     * Below it the day gets resting energy only. The model works per second and never fills the
+     * gap between two samples, so a live Bluetooth stream at about one sample every thirty seconds
+     * sits far below any usable value.
      */
     val minHrCoverageFrac: Double = 0.5,
 
-    /** Half-width, in seconds, of the centred window the spike filter compares each second against. */
-    val hampelRadiusS: Int = 5,
-
-    /** How many robust deviations from the local median a reading must sit at to count as a spike. */
-    val hampelSigmas: Double = 3.0,
-
     /**
-     * Whether the highest reading in each block, and the seconds around it, are replaced.
+     * Half the width of the centred window each reading is compared against.
      *
-     * This drops real effort along with artifacts. It replaces a run of readings with one number, so
-     * it moves the day's energy in either direction rather than only lowering it: which way depends
-     * on where the block's peak sits and on what the readings bracketing it read.
+     * Wider judges a reading against a longer stretch, so a sustained climb is less likely to be
+     * called a spike; narrower catches short artifacts but can mistake a real surge for one.
      */
-    val suppressPeaks: Boolean = true,
-
-    /** The length in seconds of the block one peak is removed from. */
-    val peakBlockS: Int = 300,
+    val spikeWindowRadiusS: Int = 5,
 
     /**
-     * The share of a block's readings left untouched; the rest are pulled down to the reading at it.
+     * How far from its window's median a reading must sit, in robust deviations, before it is
+     * replaced by that median.
      *
-     * One means no clipping at all, since nothing can exceed the block's own maximum.
+     * Lower replaces more readings, real ones included; higher leaves artifacts in the stream.
      */
-    val peakPercentile: Double = 0.97,
-
-    /** Smoothed motion at or below this many g counts as still. */
-    val motionStillG: Double = 0.02,
-
-    /** How many seconds of motion are averaged before the stillness test. */
-    val motionSmoothS: Int = 10,
-
-    /** The shortest quiet stretch, in seconds, that can measure the basal heart rate. */
-    val basalMinWindowS: Int = 300,
+    val spikeThresholdSigmas: Double = 3.0,
 
     /**
-     * How far, in bpm, the rate at a second may stand above the lowest rate of the stretch behind it.
+     * Whether every reading above its block's kept share is pulled down to the reading at that
+     * share.
      *
-     * Once the rate has risen further than this above that lowest, the lowest is a rate the wearer
-     * has left behind, and the stretch is cut back until what it measures is a rate this second is
-     * close to.
+     * This drops real effort along with artifacts. It only ever lowers a reading, so it can only
+     * lower the day's energy above resting.
      */
-    val basalHrRangeBpm: Double = 10.0,
+    val peakClipEnabled: Boolean = true,
 
     /**
-     * The share of a quiet stretch that must be still.
+     * The length of the block one clipping ceiling is computed over.
      *
-     * Predominantly still rather than perfectly still: a brief tick would otherwise chop a genuinely
-     * restful period into pieces too short to qualify.
+     * A block whose last seconds are still climbing or falling is extended past this length, so it
+     * does not end inside one rise. Longer blocks weigh a reading against more of the day, so a
+     * single hard effort is less likely to set its own ceiling.
      */
-    val basalStillFrac: Double = 0.98,
+    val peakClipBlockS: Int = 300,
 
     /**
-     * The share of a quiet stretch that must carry beat-to-beat intervals.
+     * The share of a block's readings left untouched; every reading above the one at that share is
+     * pulled down to it.
+     *
+     * One clips nothing, since no reading exceeds its own block's maximum. Lower keeps less and
+     * pulls more real effort down with the artifacts.
+     */
+    val peakClipKeptFrac: Double = 0.97,
+
+    /**
+     * Smoothed wrist motion at or below this counts the second as still.
+     *
+     * Higher counts light activity as rest, so quiet stretches form during it and report a basal
+     * rate above the true one; lower finds fewer stretches.
+     */
+    val stillMaxG: Double = 0.02,
+
+    /**
+     * How many seconds of motion are averaged before the stillness test.
+     *
+     * Longer averaging makes a single twitch harmless but spreads the edge of a real movement over
+     * neighbouring seconds. It cannot go below three, the samples the average itself requires.
+     */
+    val stillSmoothingS: Int = 10,
+
+    /**
+     * How long a stretch must have qualified before its lowest reading may set the basal heart
+     * rate.
+     *
+     * Longer asks for more evidence and finds fewer stretches; shorter lets one calm minute set
+     * the rate the rest of the day is measured against.
+     */
+    val quietStretchMinLengthS: Int = 300,
+
+    /**
+     * How far the heart rate may climb above the lowest reading of the stretch behind it before
+     * that stretch ends.
+     *
+     * That lowest is what the stretch would report, so once the rate stands this far above it the
+     * wearer has left it. Wider lets a stretch grow across a real climb and report a rate the
+     * wearer is no longer at.
+     */
+    val quietStretchMaxRiseBpm: Double = 10.0,
+
+    /**
+     * The share of a stretch's seconds that must be still.
+     *
+     * It is a share of the whole stretch, so one restless second pauses the stretch rather than
+     * ending it and later still seconds can dilute it back. Lower admits stretches with real
+     * movement inside them.
+     */
+    val quietStretchMinStillFrac: Double = 0.98,
+
+    /**
+     * The share of a stretch's seconds that must carry a beat-to-beat interval.
      *
      * Beat coverage stands in for a clean optical lock, which stillness alone does not establish.
+     * At one half or below it can pause a stretch but never end one; above that it can end one.
      */
-    val basalBeatCoverageFrac: Double = 0.5,
-
-    /** How many seconds of heart rate are averaged before the basal value is allowed to fall. */
-    val restSmoothS: Int = 30,
+    val quietStretchMinBeatFrac: Double = 0.5,
 
     /**
-     * The least readings those seconds must carry for the average to count.
+     * The trailing median of this many seconds of heart rate is the only value that may lower the
+     * basal rate between measurements, because a rate under the current basal contradicts it
+     * whatever an earlier stretch measured.
      *
-     * Above [restSmoothS] no window can ever hold enough, and the basal rate then only ever moves
+     * Longer windows lower it more slowly.
+     */
+    val basalLowerWindowS: Int = 30,
+
+    /**
+     * How many of that window's seconds must carry a reading before its median counts.
+     *
+     * Above the window length no window can ever hold enough, and the basal rate then only moves
      * where a quiet stretch measures it.
      */
-    val restSmoothMinSamples: Int = 20,
+    val basalLowerMinSamples: Int = 20,
 
     /**
-     * How far above the wearer's resting heart rate the day starts, in bpm.
+     * How far above the wearer's resting heart rate the basal rate starts, before any quiet
+     * stretch has measured it.
      *
-     * Resting heart rate is read over sleep and a basal heart rate over a still waking stretch, which
-     * sits a little above it.
+     * Resting heart rate is read over sleep, a basal rate over a still waking stretch, which sits
+     * a little above it. A starting value and not a floor: the first measurement replaces it, and
+     * the lowering path may go under it at once.
      */
-    val basalHrSeedOffsetBpm: Double = 5.0,
+    val basalSeedOffsetBpm: Double = 5.0,
 
     /**
-     * The width in bpm of each band over which a beat above the resting rate is discounted.
+     * The width of each band above the wearer's resting heart rate over which a beat counts for
+     * less: a quarter, then a half, then three quarters, then in full.
      *
-     * Three bands sit above the resting heart rate, worth a quarter, a half and three quarters of a
-     * beat each; a beat above all three is worth a whole one. Zero counts every beat in full, which
-     * is the straight heart-rate reserve.
+     * Zero counts every beat in full, which is the straight heart-rate reserve. Wider bands
+     * discount more of a day spent just above rest.
      */
     val reserveRampBandBpm: Double = 10.0,
 
-    /** The wearer's measured resting energy per day, in kcal; zero estimates it from their body. */
-    val measuredBasalKcalDay: Double = 0.0,
+    /**
+     * The wearer's own measured resting energy per day.
+     *
+     * Zero estimates it from the wearer's height, weight, age and sex instead. It sets the floor
+     * every second of the day accrues, worn or not, so it moves every day's total.
+     */
+    val restingEnergyKcalPerDay: Double = 0.0,
 
     /**
-     * The share of resting energy OUTSIDE the brain's that comes from fat overnight.
+     * The share of resting energy from fat overnight, taken over the four fifths outside the
+     * brain's demand — the brain takes a fifth of resting metabolism and runs on glucose alone.
      *
-     * The brain takes a fifth of resting metabolism and runs on glucose alone, so this is a share of
-     * the remaining four fifths rather than of the whole.
+     * It changes the fuel split reported, not the energy. Held from 02:00 until an hour before the
+     * daytime share is reached.
      */
-    val basalFatNight: Double = 0.80,
+    val restingFatNightFrac: Double = 0.80,
 
-    /** The same share during the day, on the same four fifths. */
-    val basalFatDay: Double = 0.30,
+    /**
+     * The same share during the day, over the same four fifths.
+     *
+     * Resting energy itself does not move across the day; what moves is the oxygen it takes to
+     * deliver it, because fat costs more oxygen per kcal than carbohydrate.
+     */
+    val restingFatDayFrac: Double = 0.30,
 
-    /** The local hour the daytime fat share is reached. */
-    val basalFatDayStartHour: Double = 10.0,
+    /**
+     * The local hour the daytime share is fully reached.
+     *
+     * The climb to it takes the hour before, and the share then holds until the overnight climb
+     * begins.
+     */
+    val restingFatDayStartHour: Double = 10.0,
 
-    /** The local hour the climb back to the overnight fat share begins. */
-    val basalFatDayEndHour: Double = 20.0,
+    /**
+     * The local hour the climb back to the overnight share begins, reaching it at 02:00.
+     *
+     * The range runs past 24 because that climb may start after midnight; set to 26 there is no
+     * climb at all and the daytime share holds through to 02:00.
+     */
+    val restingFatDayEndHour: Double = 20.0,
 
-    /** The share of active energy that comes from fat at the bottom of zone 1. */
-    val activeFatAtZone1: Double = 1.0,
+    /**
+     * The share of energy above resting that comes from fat at the bottom of zone 1, and at every
+     * rate below it.
+     *
+     * The share between here and the top of zone 2 is interpolated across the wearer's own zone
+     * boundaries.
+     */
+    val activeFatZone1Frac: Double = 1.0,
 
-    /** The share of active energy that comes from fat at the top of zone 2. */
-    val activeFatAtZone2Top: Double = 0.66,
+    /**
+     * The share of energy above resting that comes from fat at the top of zone 2.
+     *
+     * From there it falls to nil at the anaerobic threshold, the bottom of zone 5 — that last
+     * anchor is a property of the curve, not a setting.
+     */
+    val activeFatZone2TopFrac: Double = 0.66,
 )
 
 /**
@@ -544,29 +674,29 @@ data class DynamicHrrModelSetting(
  * that disables a stage between them is reachable and is documented on the fields themselves.
  */
 object DynamicHrrModelSettingRanges {
-    val SESSION_GAP_S: IntRange = 60..7_200
+    val WEAR_SESSION_MAX_SILENCE_S: IntRange = 60..7_200
     val MIN_HR_COVERAGE_FRAC: ClosedFloatingPointRange<Double> = 0.05..1.0
-    val HAMPEL_RADIUS_S: IntRange = 1..30
-    val HAMPEL_SIGMAS: ClosedFloatingPointRange<Double> = 1.0..10.0
-    val PEAK_BLOCK_S: IntRange = 30..3_600
-    val PEAK_PERCENTILE: ClosedFloatingPointRange<Double> = 0.50..1.00
-    val MOTION_STILL_G: ClosedFloatingPointRange<Double> = 0.001..0.5
+    val SPIKE_WINDOW_RADIUS_S: IntRange = 1..30
+    val SPIKE_THRESHOLD_SIGMAS: ClosedFloatingPointRange<Double> = 1.0..10.0
+    val PEAK_CLIP_BLOCK_S: IntRange = 30..3_600
+    val PEAK_CLIP_KEPT_FRAC: ClosedFloatingPointRange<Double> = 0.50..1.00
+    val STILL_MAX_G: ClosedFloatingPointRange<Double> = 0.001..0.5
     // Never below the samples the mean requires, which would leave every second not still and every
     // day declined for a reason no readout distinguishes from a strap that reports no motion.
-    val MOTION_SMOOTH_S: IntRange = 3..300
-    val BASAL_MIN_WINDOW_S: IntRange = 60..3_600
-    val BASAL_HR_RANGE_BPM: ClosedFloatingPointRange<Double> = 1.0..40.0
-    val BASAL_STILL_FRAC: ClosedFloatingPointRange<Double> = 0.5..1.0
-    val BASAL_BEAT_COVERAGE_FRAC: ClosedFloatingPointRange<Double> = 0.0..1.0
-    val REST_SMOOTH_S: IntRange = 5..600
-    val REST_SMOOTH_MIN_SAMPLES: IntRange = 1..600
-    val BASAL_HR_SEED_OFFSET_BPM: ClosedFloatingPointRange<Double> = 0.0..30.0
+    val STILL_SMOOTHING_S: IntRange = 3..300
+    val QUIET_STRETCH_MIN_LENGTH_S: IntRange = 60..3_600
+    val QUIET_STRETCH_MAX_RISE_BPM: ClosedFloatingPointRange<Double> = 1.0..40.0
+    val QUIET_STRETCH_MIN_STILL_FRAC: ClosedFloatingPointRange<Double> = 0.5..1.0
+    val QUIET_STRETCH_MIN_BEAT_FRAC: ClosedFloatingPointRange<Double> = 0.0..1.0
+    val BASAL_LOWER_WINDOW_S: IntRange = 5..600
+    val BASAL_LOWER_MIN_SAMPLES: IntRange = 1..600
+    val BASAL_SEED_OFFSET_BPM: ClosedFloatingPointRange<Double> = 0.0..30.0
     val RESERVE_RAMP_BAND_BPM: ClosedFloatingPointRange<Double> = 0.0..40.0
-    val MEASURED_BASAL_KCAL_DAY: ClosedFloatingPointRange<Double> = 0.0..6_000.0
-    val BASAL_FAT_NIGHT: ClosedFloatingPointRange<Double> = 0.0..1.0
-    val BASAL_FAT_DAY: ClosedFloatingPointRange<Double> = 0.0..1.0
-    val BASAL_FAT_DAY_START_HOUR: ClosedFloatingPointRange<Double> = 3.0..22.0
-    val BASAL_FAT_DAY_END_HOUR: ClosedFloatingPointRange<Double> = 3.0..26.0
-    val ACTIVE_FAT_AT_ZONE1: ClosedFloatingPointRange<Double> = 0.0..1.0
-    val ACTIVE_FAT_AT_ZONE2_TOP: ClosedFloatingPointRange<Double> = 0.0..1.0
+    val RESTING_ENERGY_KCAL_PER_DAY: ClosedFloatingPointRange<Double> = 0.0..6_000.0
+    val RESTING_FAT_NIGHT_FRAC: ClosedFloatingPointRange<Double> = 0.0..1.0
+    val RESTING_FAT_DAY_FRAC: ClosedFloatingPointRange<Double> = 0.0..1.0
+    val RESTING_FAT_DAY_START_HOUR: ClosedFloatingPointRange<Double> = 3.0..22.0
+    val RESTING_FAT_DAY_END_HOUR: ClosedFloatingPointRange<Double> = 3.0..26.0
+    val ACTIVE_FAT_ZONE1_FRAC: ClosedFloatingPointRange<Double> = 0.0..1.0
+    val ACTIVE_FAT_ZONE2_TOP_FRAC: ClosedFloatingPointRange<Double> = 0.0..1.0
 }

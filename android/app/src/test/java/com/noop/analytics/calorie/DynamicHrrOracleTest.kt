@@ -88,8 +88,8 @@ class DynamicHrrOracleTest {
 
     @Test
     fun aWholeDay_matchesTheReferenceImplementationsDayFigures() {
-        assertEquals(2990.265489593724, dayA.dayTotalKcal, 1e-9)
-        assertEquals(1165.0184895936784, dayA.dayActiveKcal, 1e-9)
+        assertEquals(2990.383429329284, dayA.dayTotalKcal, 1e-9)
+        assertEquals(1165.1364293292384, dayA.dayActiveKcal, 1e-9)
         assertEquals(
             4.0,
             dayA.extras.getValue(DynamicHrrModel.Extra.QUIET_WINDOW_COUNT),
@@ -101,12 +101,12 @@ class DynamicHrrOracleTest {
             0.0,
         )
         assertEquals(
-            162.4212868258106,
+            162.41117990136905,
             dayA.extras.getValue(DynamicHrrModel.Extra.FAT_GRAMS),
             1e-9,
         )
         assertEquals(
-            356.9525349831962,
+            357.004472745467,
             dayA.extras.getValue(DynamicHrrModel.Extra.CHO_GRAMS),
             1e-9,
         )
@@ -158,28 +158,28 @@ class DynamicHrrOracleTest {
             vo2maxOverride = 41.0,
             hrZoneThresholds = listOf(88.0, 110.0, 132.0, 154.0, 166.0),
             dynamicHrrModelSetting = DynamicHrrModelSetting(
-                sessionGapS = 600,
+                wearSessionMaxSilenceS = 600,
                 minHrCoverageFrac = 0.4,
-                hampelRadiusS = 3,
-                hampelSigmas = 2.0,
-                suppressPeaks = false,
-                motionStillG = 0.03,
-                motionSmoothS = 6,
-                basalMinWindowS = 240,
-                basalHrRangeBpm = 6.0,
-                basalStillFrac = 0.9,
-                basalBeatCoverageFrac = 0.3,
-                restSmoothS = 20,
-                restSmoothMinSamples = 15,
-                basalHrSeedOffsetBpm = 3.0,
+                spikeWindowRadiusS = 3,
+                spikeThresholdSigmas = 2.0,
+                peakClipEnabled = false,
+                stillMaxG = 0.03,
+                stillSmoothingS = 6,
+                quietStretchMinLengthS = 240,
+                quietStretchMaxRiseBpm = 6.0,
+                quietStretchMinStillFrac = 0.9,
+                quietStretchMinBeatFrac = 0.3,
+                basalLowerWindowS = 20,
+                basalLowerMinSamples = 15,
+                basalSeedOffsetBpm = 3.0,
                 reserveRampBandBpm = 7.0,
-                measuredBasalKcalDay = 1_400.0,
-                basalFatNight = 0.7,
-                basalFatDay = 0.25,
-                basalFatDayStartHour = 8.0,
-                basalFatDayEndHour = 18.0,
-                activeFatAtZone1 = 0.9,
-                activeFatAtZone2Top = 0.5,
+                restingEnergyKcalPerDay = 1_400.0,
+                restingFatNightFrac = 0.7,
+                restingFatDayFrac = 0.25,
+                restingFatDayStartHour = 8.0,
+                restingFatDayEndHour = 18.0,
+                activeFatZone1Frac = 0.9,
+                activeFatZone2TopFrac = 0.5,
             ),
         ),
         vitals = CalorieVitals(hrmax = 172.0, restingHR = 62.0),
@@ -239,7 +239,7 @@ class DynamicHrrOracleTest {
     // ── The reference implementation's output, pasted verbatim ────────────────────────────────
 
     private val A_MINUTE_ACTIVE_KCAL = """
-        0.0,0.009600454889183468,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,10.346678449387396,0.004509046305797878,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+        0.0,0.009600454889183468,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,10.353236154974036,0.004509046305797878,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
     """
 
     private val A_MINUTE_BASAL_HR_BPM = """
@@ -247,11 +247,11 @@ class DynamicHrrOracleTest {
     """
 
     private val A_MINUTE_FAT_PERCENTAGE = """
-        50.66666666666667,57.654066865805966,64.00000000000009,64.00000000000009,64.00000000000009,64.00000000000009,64.00000000000009,64.00000000000009,64.00000000000009,64.00000000000009,57.60931058720611,24.269399598479502,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,30.666666666666696,37.33333333333339,43.99999999999997
+        50.66666666666667,57.654066865805966,64.00000000000009,64.00000000000009,64.00000000000009,64.00000000000009,64.00000000000009,64.00000000000009,64.00000000000009,64.00000000000009,57.53140233549521,24.269399598479502,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,23.99999999999999,30.666666666666696,37.33333333333339,43.99999999999997
     """
 
     private val A_MINUTE_DELTA_HR_BPM = """
-        0.0,0.0,null,null,null,null,null,null,null,0.0,-0.03333333333333333,0.0,null,null,null,null,null,null,null,null,null,null,null,null
+        0.0,0.0,null,null,null,null,null,null,null,0.0,0.0,0.0,null,null,null,null,null,null,null,null,null,null,null,null
     """
 
     private val B_MINUTE_ACTIVE_KCAL = """

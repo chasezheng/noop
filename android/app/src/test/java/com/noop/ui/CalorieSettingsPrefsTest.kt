@@ -124,8 +124,8 @@ class CalorieSettingsPrefsTest {
 
         val profile = ProfileStore(prefs)
 
-        assertEquals(DynamicHrrModelSettingRanges.BASAL_STILL_FRAC.endInclusive, profile.calorieDhrrBasalStillFrac, 0.0)
-        assertEquals(DynamicHrrModelSettingRanges.HAMPEL_RADIUS_S.last, profile.calorieDhrrHampelRadiusS)
+        assertEquals(DynamicHrrModelSettingRanges.QUIET_STRETCH_MIN_STILL_FRAC.endInclusive, profile.calorieDhrrQuietStretchMinStillFrac, 0.0)
+        assertEquals(DynamicHrrModelSettingRanges.SPIKE_WINDOW_RADIUS_S.last, profile.calorieDhrrSpikeWindowRadiusS)
     }
 
     @Test
@@ -157,57 +157,57 @@ class CalorieSettingsPrefsTest {
 
     /** Every field moved off its default, and each to a distinct value. */
     private fun ProfileStore.chooseEveryMeasuredBasalSetting() {
-        calorieDhrrSessionGapS = 900
+        calorieDhrrWearSessionMaxSilenceS = 900
         calorieDhrrMinHrCoverageFrac = 0.61
-        calorieDhrrHampelRadiusS = 7
-        calorieDhrrHampelSigmas = 2.5
-        calorieDhrrSuppressPeaks = false
-        calorieDhrrPeakBlockS = 240
-        calorieDhrrPeakPercentile = 0.93
-        calorieDhrrMotionStillG = 0.015
-        calorieDhrrMotionSmoothS = 12
-        calorieDhrrBasalMinWindowS = 420
-        calorieDhrrBasalHrRangeBpm = 8.0
-        calorieDhrrBasalStillFrac = 0.95
-        calorieDhrrBasalBeatCoverageFrac = 0.41
-        calorieDhrrRestSmoothS = 45
-        calorieDhrrRestSmoothMinSamples = 25
-        calorieDhrrBasalHrSeedOffsetBpm = 4.0
+        calorieDhrrSpikeWindowRadiusS = 7
+        calorieDhrrSpikeThresholdSigmas = 2.5
+        calorieDhrrPeakClipEnabled = false
+        calorieDhrrPeakClipBlockS = 240
+        calorieDhrrPeakClipKeptFrac = 0.93
+        calorieDhrrStillMaxG = 0.015
+        calorieDhrrStillSmoothingS = 12
+        calorieDhrrQuietStretchMinLengthS = 420
+        calorieDhrrQuietStretchMaxRiseBpm = 8.0
+        calorieDhrrQuietStretchMinStillFrac = 0.95
+        calorieDhrrQuietStretchMinBeatFrac = 0.41
+        calorieDhrrBasalLowerWindowS = 45
+        calorieDhrrBasalLowerMinSamples = 25
+        calorieDhrrBasalSeedOffsetBpm = 4.0
         calorieDhrrReserveRampBandBpm = 12.0
-        calorieDhrrMeasuredBasalKcalDay = 1_577.0
-        calorieDhrrBasalFatNight = 0.75
-        calorieDhrrBasalFatDay = 0.35
-        calorieDhrrBasalFatDayStartHour = 9.0
-        calorieDhrrBasalFatDayEndHour = 21.0
-        calorieDhrrActiveFatAtZone1 = 0.95
-        calorieDhrrActiveFatAtZone2Top = 0.6
+        calorieDhrrRestingEnergyKcalPerDay = 1_577.0
+        calorieDhrrRestingFatNightFrac = 0.75
+        calorieDhrrRestingFatDayFrac = 0.35
+        calorieDhrrRestingFatDayStartHour = 9.0
+        calorieDhrrRestingFatDayEndHour = 21.0
+        calorieDhrrActiveFatZone1Frac = 0.95
+        calorieDhrrActiveFatZone2TopFrac = 0.6
     }
 
     private val chosenMeasuredBasal = DynamicHrrModelSetting(
-        sessionGapS = 900,
+        wearSessionMaxSilenceS = 900,
         minHrCoverageFrac = 0.61,
-        hampelRadiusS = 7,
-        hampelSigmas = 2.5,
-        suppressPeaks = false,
-        peakBlockS = 240,
-        peakPercentile = 0.93,
-        motionStillG = 0.015,
-        motionSmoothS = 12,
-        basalMinWindowS = 420,
-        basalHrRangeBpm = 8.0,
-        basalStillFrac = 0.95,
-        basalBeatCoverageFrac = 0.41,
-        restSmoothS = 45,
-        restSmoothMinSamples = 25,
-        basalHrSeedOffsetBpm = 4.0,
+        spikeWindowRadiusS = 7,
+        spikeThresholdSigmas = 2.5,
+        peakClipEnabled = false,
+        peakClipBlockS = 240,
+        peakClipKeptFrac = 0.93,
+        stillMaxG = 0.015,
+        stillSmoothingS = 12,
+        quietStretchMinLengthS = 420,
+        quietStretchMaxRiseBpm = 8.0,
+        quietStretchMinStillFrac = 0.95,
+        quietStretchMinBeatFrac = 0.41,
+        basalLowerWindowS = 45,
+        basalLowerMinSamples = 25,
+        basalSeedOffsetBpm = 4.0,
         reserveRampBandBpm = 12.0,
-        measuredBasalKcalDay = 1_577.0,
-        basalFatNight = 0.75,
-        basalFatDay = 0.35,
-        basalFatDayStartHour = 9.0,
-        basalFatDayEndHour = 21.0,
-        activeFatAtZone1 = 0.95,
-        activeFatAtZone2Top = 0.6,
+        restingEnergyKcalPerDay = 1_577.0,
+        restingFatNightFrac = 0.75,
+        restingFatDayFrac = 0.35,
+        restingFatDayStartHour = 9.0,
+        restingFatDayEndHour = 21.0,
+        activeFatZone1Frac = 0.95,
+        activeFatZone2TopFrac = 0.6,
     )
 
     @Test
@@ -255,22 +255,150 @@ class CalorieSettingsPrefsTest {
         // Twenty-three ranges, two storage mechanisms: a Double stored as its raw bits and an Int.
         // The clamp lives in the mechanism, so one value of each kind covers all of them.
         val profile = ProfileStore(FakeSharedPreferences())
-        profile.calorieDhrrBasalStillFrac = 4.0
-        profile.calorieDhrrHampelRadiusS = 9_000
+        profile.calorieDhrrQuietStretchMinStillFrac = 4.0
+        profile.calorieDhrrSpikeWindowRadiusS = 9_000
 
-        assertEquals(1.0, profile.calorieDhrrBasalStillFrac, 0.0)
-        assertEquals(30, profile.calorieDhrrHampelRadiusS)
+        assertEquals(1.0, profile.calorieDhrrQuietStretchMinStillFrac, 0.0)
+        assertEquals(30, profile.calorieDhrrSpikeWindowRadiusS)
     }
 
     @Test
     fun aMeasuredBasalSettingBelowItsRange_readsBackAsTheFloor() {
         val profile = ProfileStore(FakeSharedPreferences())
-        profile.calorieDhrrBasalStillFrac = -1.0
-        profile.calorieDhrrHampelRadiusS = 0
+        profile.calorieDhrrQuietStretchMinStillFrac = -1.0
+        profile.calorieDhrrSpikeWindowRadiusS = 0
 
-        assertEquals(0.5, profile.calorieDhrrBasalStillFrac, 0.0)
-        assertEquals(1, profile.calorieDhrrHampelRadiusS)
+        assertEquals(0.5, profile.calorieDhrrQuietStretchMinStillFrac, 0.0)
+        assertEquals(1, profile.calorieDhrrSpikeWindowRadiusS)
     }
+
+    // ── The measured-basal keys renamed, read back through their new names ─────────────────
+
+    @Test
+    fun aValueStoredUnderTheOldKeyName_readsBackThroughTheNewOne() {
+        // A device that has been running the build from before the rename. All three stored kinds:
+        // an Int count, a Double as raw Long bits, a Boolean.
+        val prefs = FakeSharedPreferences()
+        prefs.edit()
+            .putInt("calorie_dhrr_basal_min_window_s", 900)
+            .putLong("calorie_dhrr_basal_still_frac", 0.93.toRawBits())
+            .putBoolean("calorie_dhrr_suppress_peaks", false)
+            .apply()
+
+        val profile = ProfileStore(prefs)
+
+        assertEquals(900, profile.calorieDhrrQuietStretchMinLengthS)
+        assertEquals(0.93, profile.calorieDhrrQuietStretchMinStillFrac, 0.0)
+        assertEquals(false, profile.calorieDhrrPeakClipEnabled)
+    }
+
+    @Test
+    fun theOldKeyNameIsGoneOnceItHasBeenCarriedOver() {
+        val prefs = FakeSharedPreferences()
+        prefs.edit().putInt("calorie_dhrr_basal_min_window_s", 900).apply()
+
+        ProfileStore(prefs)
+
+        assertTrue("the old name must not be left behind", !prefs.contains("calorie_dhrr_basal_min_window_s"))
+        assertEquals(900, prefs.getInt("calorie_dhrr_quiet_stretch_min_length_s", 0))
+    }
+
+    @Test
+    fun aValueAlreadyStoredUnderTheNewKeyName_survivesTheOldOne() {
+        // The wearer moved this setting after the rename, so the new name is the deliberate choice
+        // and the stale old one must not overwrite it.
+        val prefs = FakeSharedPreferences()
+        prefs.edit()
+            .putInt("calorie_dhrr_basal_min_window_s", 900)
+            .putInt("calorie_dhrr_quiet_stretch_min_length_s", 1_200)
+            .apply()
+
+        val profile = ProfileStore(prefs)
+
+        assertEquals(1_200, profile.calorieDhrrQuietStretchMinLengthS)
+        assertTrue(!prefs.contains("calorie_dhrr_basal_min_window_s"))
+    }
+
+    @Test
+    fun aSettingNeitherNameHolds_isNotWrittenByTheMigration() {
+        // [backupSnapshot] exports on key PRESENCE, so a migration that defaulted an absent key would
+        // mark a shipped default as a deliberate choice and let a backup stamp it over another device.
+        val prefs = FakeSharedPreferences()
+
+        val profile = ProfileStore(prefs)
+
+        assertTrue(!prefs.contains("calorie_dhrr_quiet_stretch_min_length_s"))
+        assertEquals(0, profile.backupSnapshot().keys.count { it.startsWith("calorie.") })
+    }
+
+    @Test
+    fun everyRenamedKeyCarriesOver() {
+        // Names the whole table rather than one entry of it, so an entry omitted from
+        // RENAMED_CALORIE_KEYS fails here instead of silently resetting that one setting.
+        val prefs = FakeSharedPreferences()
+        val edit = prefs.edit()
+        for ((key, value) in LEGACY_INT_KEYS) edit.putInt(key, value)
+        for ((key, value) in LEGACY_DOUBLE_KEYS) edit.putLong(key, value.toRawBits())
+        edit.putBoolean("calorie_dhrr_suppress_peaks", false)
+        edit.apply()
+
+        val setting = ProfileStore(prefs).toDynamicHrrModelSetting()
+
+        assertEquals(1_500, setting.wearSessionMaxSilenceS)
+        assertEquals(11, setting.spikeWindowRadiusS)
+        assertEquals(2.25, setting.spikeThresholdSigmas, 0.0)
+        assertEquals(false, setting.peakClipEnabled)
+        assertEquals(210, setting.peakClipBlockS)
+        assertEquals(0.91, setting.peakClipKeptFrac, 0.0)
+        assertEquals(0.031, setting.stillMaxG, 0.0)
+        assertEquals(14, setting.stillSmoothingS)
+        assertEquals(900, setting.quietStretchMinLengthS)
+        assertEquals(7.5, setting.quietStretchMaxRiseBpm, 0.0)
+        assertEquals(0.93, setting.quietStretchMinStillFrac, 0.0)
+        assertEquals(0.41, setting.quietStretchMinBeatFrac, 0.0)
+        assertEquals(55, setting.basalLowerWindowS)
+        assertEquals(31, setting.basalLowerMinSamples)
+        assertEquals(6.5, setting.basalSeedOffsetBpm, 0.0)
+        assertEquals(1_611.0, setting.restingEnergyKcalPerDay, 0.0)
+        assertEquals(0.71, setting.restingFatNightFrac, 0.0)
+        assertEquals(0.41, setting.restingFatDayFrac, 0.0)
+        assertEquals(8.0, setting.restingFatDayStartHour, 0.0)
+        assertEquals(21.0, setting.restingFatDayEndHour, 0.0)
+        assertEquals(0.94, setting.activeFatZone1Frac, 0.0)
+        assertEquals(0.61, setting.activeFatZone2TopFrac, 0.0)
+        for (key in LEGACY_INT_KEYS.keys + LEGACY_DOUBLE_KEYS.keys) {
+            assertTrue("$key must not be left behind", !prefs.contains(key))
+        }
+    }
+
+    /** Pre-rename names of the Int settings, with a value distinct from every default. */
+    private val LEGACY_INT_KEYS = mapOf(
+        "calorie_dhrr_session_gap_s" to 1_500,
+        "calorie_dhrr_hampel_radius_s" to 11,
+        "calorie_dhrr_peak_block_s" to 210,
+        "calorie_dhrr_motion_smooth_s" to 14,
+        "calorie_dhrr_basal_min_window_s" to 900,
+        "calorie_dhrr_rest_smooth_s" to 55,
+        "calorie_dhrr_rest_smooth_min_samples" to 31,
+    )
+
+    /** The same for the Double settings, which store their raw bits under a Long. */
+    private val LEGACY_DOUBLE_KEYS = mapOf(
+        "calorie_dhrr_hampel_sigmas" to 2.25,
+        "calorie_dhrr_peak_percentile" to 0.91,
+        "calorie_dhrr_motion_still_g" to 0.031,
+        "calorie_dhrr_basal_hr_range_bpm" to 7.5,
+        "calorie_dhrr_basal_still_frac" to 0.93,
+        "calorie_dhrr_basal_beat_coverage_frac" to 0.41,
+        "calorie_dhrr_basal_hr_seed_offset_bpm" to 6.5,
+        "calorie_dhrr_measured_basal_kcal_day" to 1_611.0,
+        "calorie_dhrr_basal_fat_night" to 0.71,
+        "calorie_dhrr_basal_fat_day" to 0.41,
+        "calorie_dhrr_basal_fat_day_start_hour" to 8.0,
+        "calorie_dhrr_basal_fat_day_end_hour" to 21.0,
+        "calorie_dhrr_active_fat_at_zone1" to 0.94,
+        "calorie_dhrr_active_fat_at_zone2_top" to 0.61,
+    )
 
     // In-memory SharedPreferences reproducing the read/write contract ProfileStore relies on.
     private class FakeSharedPreferences : SharedPreferences {

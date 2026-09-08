@@ -60,7 +60,7 @@ internal fun interpolate(xs: DoubleArray, ys: DoubleArray, x: Double): Double {
  * move across the day. What moves is the oxygen it takes to meet that demand, because fat costs more
  * oxygen per kcal than carbohydrate does.
  */
-internal class BasalFatCurve(setting: DynamicHrrModelSetting) {
+internal class RestingFatCurve(setting: DynamicHrrModelSetting) {
 
     private val hours: DoubleArray
     private val shares: DoubleArray
@@ -70,13 +70,13 @@ internal class BasalFatCurve(setting: DynamicHrrModelSetting) {
         // curve wraps onto the same hour a day later. It is an anchor of the shape rather than a
         // measurement, so it is fixed here.
         val nightHour = 2.0
-        val dayStart = setting.basalFatDayStartHour.coerceIn(nightHour + 1.0, nightHour + 24.0)
-        val dayEnd = setting.basalFatDayEndHour.coerceIn(dayStart, nightHour + 24.0)
+        val dayStart = setting.restingFatDayStartHour.coerceIn(nightHour + 1.0, nightHour + 24.0)
+        val dayEnd = setting.restingFatDayEndHour.coerceIn(dayStart, nightHour + 24.0)
         hours = doubleArrayOf(nightHour, dayStart - 1.0, dayStart, dayEnd, nightHour + 24.0)
         shares = doubleArrayOf(
-            setting.basalFatNight, setting.basalFatNight,
-            setting.basalFatDay, setting.basalFatDay,
-            setting.basalFatNight,
+            setting.restingFatNightFrac, setting.restingFatNightFrac,
+            setting.restingFatDayFrac, setting.restingFatDayFrac,
+            setting.restingFatNightFrac,
         )
     }
 
@@ -104,8 +104,8 @@ internal class ActiveFatCurve(zones: HrZoneSet, setting: DynamicHrrModelSetting)
     )
 
     private val shares = doubleArrayOf(
-        setting.activeFatAtZone1,
-        setting.activeFatAtZone2Top,
+        setting.activeFatZone1Frac,
+        setting.activeFatZone2TopFrac,
         // Above the anaerobic threshold the fat contribution is nil. That is a property of the curve
         // rather than a choice, so it is not a setting.
         0.0,

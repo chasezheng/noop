@@ -386,10 +386,10 @@ private fun DynamicHrrSection(profile: ProfileStore, onEdited: () -> Unit) {
         )
 
         CountKnob(
-            R.string.calorie_tracking_dhrr_session_gap_label,
-            R.string.calorie_tracking_dhrr_session_gap_detail,
-            profile.calorieDhrrSessionGapS, step = 60,
-        ) { profile.calorieDhrrSessionGapS = it; onEdited() }
+            R.string.calorie_tracking_dhrr_wear_session_max_silence_label,
+            R.string.calorie_tracking_dhrr_wear_session_max_silence_detail,
+            profile.calorieDhrrWearSessionMaxSilenceS, step = 60,
+        ) { profile.calorieDhrrWearSessionMaxSilenceS = it; onEdited() }
         ShareKnob(
             R.string.calorie_tracking_dhrr_min_coverage_label,
             R.string.calorie_tracking_dhrr_min_coverage_detail,
@@ -397,77 +397,77 @@ private fun DynamicHrrSection(profile: ProfileStore, onEdited: () -> Unit) {
         ) { profile.calorieDhrrMinHrCoverageFrac = it; onEdited() }
 
         CountKnob(
-            R.string.calorie_tracking_dhrr_hampel_radius_label,
-            R.string.calorie_tracking_dhrr_hampel_radius_detail,
-            profile.calorieDhrrHampelRadiusS, step = 1,
-        ) { profile.calorieDhrrHampelRadiusS = it; onEdited() }
+            R.string.calorie_tracking_dhrr_spike_window_radius_label,
+            R.string.calorie_tracking_dhrr_spike_window_radius_detail,
+            profile.calorieDhrrSpikeWindowRadiusS, step = 1,
+        ) { profile.calorieDhrrSpikeWindowRadiusS = it; onEdited() }
         NumberKnob(
-            R.string.calorie_tracking_dhrr_hampel_sigmas_label,
-            R.string.calorie_tracking_dhrr_hampel_sigmas_detail,
-            profile.calorieDhrrHampelSigmas, step = 0.5, decimals = 1,
-        ) { profile.calorieDhrrHampelSigmas = it; onEdited() }
+            R.string.calorie_tracking_dhrr_spike_threshold_sigmas_label,
+            R.string.calorie_tracking_dhrr_spike_threshold_sigmas_detail,
+            profile.calorieDhrrSpikeThresholdSigmas, step = 0.5, decimals = 1,
+        ) { profile.calorieDhrrSpikeThresholdSigmas = it; onEdited() }
         SettingsToggleRow(
-            title = uiString(R.string.calorie_tracking_dhrr_suppress_peaks_label),
-            detail = uiString(R.string.calorie_tracking_dhrr_suppress_peaks_detail),
-            checked = profile.calorieDhrrSuppressPeaks,
-            onCheckedChange = { profile.calorieDhrrSuppressPeaks = it; onEdited() },
+            title = uiString(R.string.calorie_tracking_dhrr_peak_clip_enabled_label),
+            detail = uiString(R.string.calorie_tracking_dhrr_peak_clip_enabled_detail),
+            checked = profile.calorieDhrrPeakClipEnabled,
+            onCheckedChange = { profile.calorieDhrrPeakClipEnabled = it; onEdited() },
         )
         CountKnob(
-            R.string.calorie_tracking_dhrr_peak_block_label,
-            R.string.calorie_tracking_dhrr_peak_block_detail,
-            profile.calorieDhrrPeakBlockS, step = 30,
-        ) { profile.calorieDhrrPeakBlockS = it; onEdited() }
+            R.string.calorie_tracking_dhrr_peak_clip_block_label,
+            R.string.calorie_tracking_dhrr_peak_clip_block_detail,
+            profile.calorieDhrrPeakClipBlockS, step = 30,
+        ) { profile.calorieDhrrPeakClipBlockS = it; onEdited() }
         ShareKnob(
-            R.string.calorie_tracking_dhrr_peak_percentile_label,
-            R.string.calorie_tracking_dhrr_peak_percentile_detail,
-            profile.calorieDhrrPeakPercentile,
-        ) { profile.calorieDhrrPeakPercentile = it; onEdited() }
+            R.string.calorie_tracking_dhrr_peak_clip_kept_label,
+            R.string.calorie_tracking_dhrr_peak_clip_kept_detail,
+            profile.calorieDhrrPeakClipKeptFrac,
+        ) { profile.calorieDhrrPeakClipKeptFrac = it; onEdited() }
 
         NumberKnob(
-            R.string.calorie_tracking_dhrr_motion_still_label,
-            R.string.calorie_tracking_dhrr_motion_still_detail,
-            profile.calorieDhrrMotionStillG, step = 0.005, decimals = 3,
-        ) { profile.calorieDhrrMotionStillG = it; onEdited() }
+            R.string.calorie_tracking_dhrr_still_max_label,
+            R.string.calorie_tracking_dhrr_still_max_detail,
+            profile.calorieDhrrStillMaxG, step = 0.005, decimals = 3,
+        ) { profile.calorieDhrrStillMaxG = it; onEdited() }
         CountKnob(
-            R.string.calorie_tracking_dhrr_motion_smooth_label,
-            R.string.calorie_tracking_dhrr_motion_smooth_detail,
-            profile.calorieDhrrMotionSmoothS, step = 1,
-        ) { profile.calorieDhrrMotionSmoothS = it; onEdited() }
+            R.string.calorie_tracking_dhrr_still_smoothing_label,
+            R.string.calorie_tracking_dhrr_still_smoothing_detail,
+            profile.calorieDhrrStillSmoothingS, step = 1,
+        ) { profile.calorieDhrrStillSmoothingS = it; onEdited() }
         CountKnob(
-            R.string.calorie_tracking_dhrr_basal_window_label,
-            R.string.calorie_tracking_dhrr_basal_window_detail,
-            profile.calorieDhrrBasalMinWindowS, step = 30,
-        ) { profile.calorieDhrrBasalMinWindowS = it; onEdited() }
+            R.string.calorie_tracking_dhrr_quiet_stretch_min_length_label,
+            R.string.calorie_tracking_dhrr_quiet_stretch_min_length_detail,
+            profile.calorieDhrrQuietStretchMinLengthS, step = 30,
+        ) { profile.calorieDhrrQuietStretchMinLengthS = it; onEdited() }
         NumberKnob(
-            R.string.calorie_tracking_dhrr_basal_range_label,
-            R.string.calorie_tracking_dhrr_basal_range_detail,
-            profile.calorieDhrrBasalHrRangeBpm, step = 1.0, decimals = 0,
-        ) { profile.calorieDhrrBasalHrRangeBpm = it; onEdited() }
+            R.string.calorie_tracking_dhrr_quiet_stretch_max_rise_label,
+            R.string.calorie_tracking_dhrr_quiet_stretch_max_rise_detail,
+            profile.calorieDhrrQuietStretchMaxRiseBpm, step = 1.0, decimals = 0,
+        ) { profile.calorieDhrrQuietStretchMaxRiseBpm = it; onEdited() }
         ShareKnob(
-            R.string.calorie_tracking_dhrr_basal_still_label,
-            R.string.calorie_tracking_dhrr_basal_still_detail,
-            profile.calorieDhrrBasalStillFrac,
-        ) { profile.calorieDhrrBasalStillFrac = it; onEdited() }
+            R.string.calorie_tracking_dhrr_quiet_stretch_min_still_label,
+            R.string.calorie_tracking_dhrr_quiet_stretch_min_still_detail,
+            profile.calorieDhrrQuietStretchMinStillFrac,
+        ) { profile.calorieDhrrQuietStretchMinStillFrac = it; onEdited() }
         ShareKnob(
-            R.string.calorie_tracking_dhrr_basal_beats_label,
-            R.string.calorie_tracking_dhrr_basal_beats_detail,
-            profile.calorieDhrrBasalBeatCoverageFrac,
-        ) { profile.calorieDhrrBasalBeatCoverageFrac = it; onEdited() }
+            R.string.calorie_tracking_dhrr_quiet_stretch_min_beat_label,
+            R.string.calorie_tracking_dhrr_quiet_stretch_min_beat_detail,
+            profile.calorieDhrrQuietStretchMinBeatFrac,
+        ) { profile.calorieDhrrQuietStretchMinBeatFrac = it; onEdited() }
         CountKnob(
-            R.string.calorie_tracking_dhrr_rest_smooth_label,
-            R.string.calorie_tracking_dhrr_rest_smooth_detail,
-            profile.calorieDhrrRestSmoothS, step = 5,
-        ) { profile.calorieDhrrRestSmoothS = it; onEdited() }
+            R.string.calorie_tracking_dhrr_basal_lower_window_label,
+            R.string.calorie_tracking_dhrr_basal_lower_window_detail,
+            profile.calorieDhrrBasalLowerWindowS, step = 5,
+        ) { profile.calorieDhrrBasalLowerWindowS = it; onEdited() }
         CountKnob(
-            R.string.calorie_tracking_dhrr_rest_samples_label,
-            R.string.calorie_tracking_dhrr_rest_samples_detail,
-            profile.calorieDhrrRestSmoothMinSamples, step = 1,
-        ) { profile.calorieDhrrRestSmoothMinSamples = it; onEdited() }
+            R.string.calorie_tracking_dhrr_basal_lower_readings_label,
+            R.string.calorie_tracking_dhrr_basal_lower_readings_detail,
+            profile.calorieDhrrBasalLowerMinSamples, step = 1,
+        ) { profile.calorieDhrrBasalLowerMinSamples = it; onEdited() }
         NumberKnob(
-            R.string.calorie_tracking_dhrr_seed_offset_label,
-            R.string.calorie_tracking_dhrr_seed_offset_detail,
-            profile.calorieDhrrBasalHrSeedOffsetBpm, step = 1.0, decimals = 0,
-        ) { profile.calorieDhrrBasalHrSeedOffsetBpm = it; onEdited() }
+            R.string.calorie_tracking_dhrr_basal_seed_offset_label,
+            R.string.calorie_tracking_dhrr_basal_seed_offset_detail,
+            profile.calorieDhrrBasalSeedOffsetBpm, step = 1.0, decimals = 0,
+        ) { profile.calorieDhrrBasalSeedOffsetBpm = it; onEdited() }
 
         NumberKnob(
             R.string.calorie_tracking_dhrr_reserve_ramp_label,
@@ -476,40 +476,40 @@ private fun DynamicHrrSection(profile: ProfileStore, onEdited: () -> Unit) {
         ) { profile.calorieDhrrReserveRampBandBpm = it; onEdited() }
 
         NumberKnob(
-            R.string.calorie_tracking_dhrr_measured_basal_label,
-            R.string.calorie_tracking_dhrr_measured_basal_detail,
-            profile.calorieDhrrMeasuredBasalKcalDay, step = 25.0, decimals = 0,
-        ) { profile.calorieDhrrMeasuredBasalKcalDay = it; onEdited() }
+            R.string.calorie_tracking_dhrr_resting_energy_label,
+            R.string.calorie_tracking_dhrr_resting_energy_detail,
+            profile.calorieDhrrRestingEnergyKcalPerDay, step = 25.0, decimals = 0,
+        ) { profile.calorieDhrrRestingEnergyKcalPerDay = it; onEdited() }
         ShareKnob(
-            R.string.calorie_tracking_dhrr_fat_night_label,
-            R.string.calorie_tracking_dhrr_fat_night_detail,
-            profile.calorieDhrrBasalFatNight,
-        ) { profile.calorieDhrrBasalFatNight = it; onEdited() }
+            R.string.calorie_tracking_dhrr_resting_fat_night_label,
+            R.string.calorie_tracking_dhrr_resting_fat_night_detail,
+            profile.calorieDhrrRestingFatNightFrac,
+        ) { profile.calorieDhrrRestingFatNightFrac = it; onEdited() }
         ShareKnob(
-            R.string.calorie_tracking_dhrr_fat_day_label,
-            R.string.calorie_tracking_dhrr_fat_day_detail,
-            profile.calorieDhrrBasalFatDay,
-        ) { profile.calorieDhrrBasalFatDay = it; onEdited() }
+            R.string.calorie_tracking_dhrr_resting_fat_day_label,
+            R.string.calorie_tracking_dhrr_resting_fat_day_detail,
+            profile.calorieDhrrRestingFatDayFrac,
+        ) { profile.calorieDhrrRestingFatDayFrac = it; onEdited() }
         NumberKnob(
-            R.string.calorie_tracking_dhrr_fat_day_start_label,
-            R.string.calorie_tracking_dhrr_fat_day_start_detail,
-            profile.calorieDhrrBasalFatDayStartHour, step = 1.0, decimals = 0,
-        ) { profile.calorieDhrrBasalFatDayStartHour = it; onEdited() }
+            R.string.calorie_tracking_dhrr_resting_fat_day_start_label,
+            R.string.calorie_tracking_dhrr_resting_fat_day_start_detail,
+            profile.calorieDhrrRestingFatDayStartHour, step = 1.0, decimals = 0,
+        ) { profile.calorieDhrrRestingFatDayStartHour = it; onEdited() }
         NumberKnob(
-            R.string.calorie_tracking_dhrr_fat_day_end_label,
-            R.string.calorie_tracking_dhrr_fat_day_end_detail,
-            profile.calorieDhrrBasalFatDayEndHour, step = 1.0, decimals = 0,
-        ) { profile.calorieDhrrBasalFatDayEndHour = it; onEdited() }
+            R.string.calorie_tracking_dhrr_resting_fat_day_end_label,
+            R.string.calorie_tracking_dhrr_resting_fat_day_end_detail,
+            profile.calorieDhrrRestingFatDayEndHour, step = 1.0, decimals = 0,
+        ) { profile.calorieDhrrRestingFatDayEndHour = it; onEdited() }
         ShareKnob(
-            R.string.calorie_tracking_dhrr_active_fat_z1_label,
-            R.string.calorie_tracking_dhrr_active_fat_z1_detail,
-            profile.calorieDhrrActiveFatAtZone1,
-        ) { profile.calorieDhrrActiveFatAtZone1 = it; onEdited() }
+            R.string.calorie_tracking_dhrr_active_fat_zone1_label,
+            R.string.calorie_tracking_dhrr_active_fat_zone1_detail,
+            profile.calorieDhrrActiveFatZone1Frac,
+        ) { profile.calorieDhrrActiveFatZone1Frac = it; onEdited() }
         ShareKnob(
-            R.string.calorie_tracking_dhrr_active_fat_z2_label,
-            R.string.calorie_tracking_dhrr_active_fat_z2_detail,
-            profile.calorieDhrrActiveFatAtZone2Top,
-        ) { profile.calorieDhrrActiveFatAtZone2Top = it; onEdited() }
+            R.string.calorie_tracking_dhrr_active_fat_zone2_top_label,
+            R.string.calorie_tracking_dhrr_active_fat_zone2_top_detail,
+            profile.calorieDhrrActiveFatZone2TopFrac,
+        ) { profile.calorieDhrrActiveFatZone2TopFrac = it; onEdited() }
     }
 }
 

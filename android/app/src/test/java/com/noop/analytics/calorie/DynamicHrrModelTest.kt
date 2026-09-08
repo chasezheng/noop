@@ -22,7 +22,7 @@ import org.junit.Test
  */
 class DynamicHrrModelTest {
 
-    private val setting = DynamicHrrModelSetting(suppressPeaks = false)
+    private val setting = DynamicHrrModelSetting(peakClipEnabled = false)
     private val subject = UserProfile(
         weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male",
         dynamicHrrModelSetting = setting,
@@ -304,7 +304,7 @@ class DynamicHrrModelTest {
         // Zero means "estimate it", so the wearer's own figure has a sentinel between it and the
         // engine's. Nothing else in the suite moves that value off zero.
         val measured = subject.copy(
-            dynamicHrrModelSetting = setting.copy(measuredBasalKcalDay = 1_577.0),
+            dynamicHrrModelSetting = setting.copy(restingEnergyKcalPerDay = 1_577.0),
         )
 
         val timeline = score(quietHour, profile = measured)
@@ -322,8 +322,8 @@ class DynamicHrrModelTest {
         // where the fold started; without this the offset could be any number and nothing would fail.
         val timeline = score(quietHour, profile = subject.copy(
             dynamicHrrModelSetting = setting.copy(
-                basalHrSeedOffsetBpm = 9.0,
-                restSmoothMinSamples = 600,
+                basalSeedOffsetBpm = 9.0,
+                basalLowerMinSamples = 600,
             ),
         ))
 
@@ -360,8 +360,8 @@ class DynamicHrrModelTest {
         val fromWhole = DynamicHrrModel(settled, vitals).timeline(0L, 86_400L, whole)
         val fromHalf = DynamicHrrModel(settled, vitals).timeline(0L, 86_400L, half)
 
-        val settledMinutes = (3_600 - DynamicHrrModelSetting().peakBlockS -
-            DynamicHrrModelSetting().hampelRadiusS) / 60
+        val settledMinutes = (3_600 - DynamicHrrModelSetting().peakClipBlockS -
+            DynamicHrrModelSetting().spikeWindowRadiusS) / 60
         val wholeSeries = fromWhole.labeledSeries.getValue(DynamicHrrModel.Label.BASAL_HR)
         val halfSeries = fromHalf.labeledSeries.getValue(DynamicHrrModel.Label.BASAL_HR)
         assertEquals(
@@ -460,7 +460,7 @@ class DynamicHrrModelTest {
         // A measured 4 320 kcal a day is 0.05 kcal a second, so a whole minute is 3.0 kcal and the
         // 30 s closing [0, 90) are 1.5. Nothing was recorded, so the window is declined.
         val measured = subject.copy(
-            dynamicHrrModelSetting = setting.copy(measuredBasalKcalDay = 4_320.0),
+            dynamicHrrModelSetting = setting.copy(restingEnergyKcalPerDay = 4_320.0),
         )
 
         val timeline = DynamicHrrModel(measured, vitals).timeline(0L, 90L, CalorieInputs())
@@ -612,7 +612,7 @@ class DynamicHrrModelTest {
         // The stage under test is a trailing MEAN, so the threshold has to be a value the mean lands
         // on exactly. Ten 0.02s average to 0.019999999999999997, which is below 0.02 and so is still
         // under `<` as well; 0.03125 is a power of two and survives the division unchanged.
-        val exact = subject.copy(dynamicHrrModelSetting = setting.copy(motionStillG = 0.03125))
+        val exact = subject.copy(dynamicHrrModelSetting = setting.copy(stillMaxG = 0.03125))
 
         val timeline = score(quietHour.copy(gravity = motion(0L, 3_600, 0.03125)), profile = exact)
 
@@ -774,29 +774,29 @@ class DynamicHrrModelTest {
         val d = DynamicHrrModelSetting()
         val r = DynamicHrrModelSettingRanges
         val outside = mapOf(
-            "sessionGapS" to (d.sessionGapS !in r.SESSION_GAP_S),
+            "wearSessionMaxSilenceS" to (d.wearSessionMaxSilenceS !in r.WEAR_SESSION_MAX_SILENCE_S),
             "minHrCoverageFrac" to (d.minHrCoverageFrac !in r.MIN_HR_COVERAGE_FRAC),
-            "hampelRadiusS" to (d.hampelRadiusS !in r.HAMPEL_RADIUS_S),
-            "hampelSigmas" to (d.hampelSigmas !in r.HAMPEL_SIGMAS),
-            "peakBlockS" to (d.peakBlockS !in r.PEAK_BLOCK_S),
-            "peakPercentile" to (d.peakPercentile !in r.PEAK_PERCENTILE),
-            "motionStillG" to (d.motionStillG !in r.MOTION_STILL_G),
-            "motionSmoothS" to (d.motionSmoothS !in r.MOTION_SMOOTH_S),
-            "basalMinWindowS" to (d.basalMinWindowS !in r.BASAL_MIN_WINDOW_S),
-            "basalHrRangeBpm" to (d.basalHrRangeBpm !in r.BASAL_HR_RANGE_BPM),
-            "basalStillFrac" to (d.basalStillFrac !in r.BASAL_STILL_FRAC),
-            "basalBeatCoverageFrac" to (d.basalBeatCoverageFrac !in r.BASAL_BEAT_COVERAGE_FRAC),
-            "restSmoothS" to (d.restSmoothS !in r.REST_SMOOTH_S),
-            "restSmoothMinSamples" to (d.restSmoothMinSamples !in r.REST_SMOOTH_MIN_SAMPLES),
-            "basalHrSeedOffsetBpm" to (d.basalHrSeedOffsetBpm !in r.BASAL_HR_SEED_OFFSET_BPM),
+            "spikeWindowRadiusS" to (d.spikeWindowRadiusS !in r.SPIKE_WINDOW_RADIUS_S),
+            "spikeThresholdSigmas" to (d.spikeThresholdSigmas !in r.SPIKE_THRESHOLD_SIGMAS),
+            "peakClipBlockS" to (d.peakClipBlockS !in r.PEAK_CLIP_BLOCK_S),
+            "peakClipKeptFrac" to (d.peakClipKeptFrac !in r.PEAK_CLIP_KEPT_FRAC),
+            "stillMaxG" to (d.stillMaxG !in r.STILL_MAX_G),
+            "stillSmoothingS" to (d.stillSmoothingS !in r.STILL_SMOOTHING_S),
+            "quietStretchMinLengthS" to (d.quietStretchMinLengthS !in r.QUIET_STRETCH_MIN_LENGTH_S),
+            "quietStretchMaxRiseBpm" to (d.quietStretchMaxRiseBpm !in r.QUIET_STRETCH_MAX_RISE_BPM),
+            "quietStretchMinStillFrac" to (d.quietStretchMinStillFrac !in r.QUIET_STRETCH_MIN_STILL_FRAC),
+            "quietStretchMinBeatFrac" to (d.quietStretchMinBeatFrac !in r.QUIET_STRETCH_MIN_BEAT_FRAC),
+            "basalLowerWindowS" to (d.basalLowerWindowS !in r.BASAL_LOWER_WINDOW_S),
+            "basalLowerMinSamples" to (d.basalLowerMinSamples !in r.BASAL_LOWER_MIN_SAMPLES),
+            "basalSeedOffsetBpm" to (d.basalSeedOffsetBpm !in r.BASAL_SEED_OFFSET_BPM),
             "reserveRampBandBpm" to (d.reserveRampBandBpm !in r.RESERVE_RAMP_BAND_BPM),
-            "measuredBasalKcalDay" to (d.measuredBasalKcalDay !in r.MEASURED_BASAL_KCAL_DAY),
-            "basalFatNight" to (d.basalFatNight !in r.BASAL_FAT_NIGHT),
-            "basalFatDay" to (d.basalFatDay !in r.BASAL_FAT_DAY),
-            "basalFatDayStartHour" to (d.basalFatDayStartHour !in r.BASAL_FAT_DAY_START_HOUR),
-            "basalFatDayEndHour" to (d.basalFatDayEndHour !in r.BASAL_FAT_DAY_END_HOUR),
-            "activeFatAtZone1" to (d.activeFatAtZone1 !in r.ACTIVE_FAT_AT_ZONE1),
-            "activeFatAtZone2Top" to (d.activeFatAtZone2Top !in r.ACTIVE_FAT_AT_ZONE2_TOP),
+            "restingEnergyKcalPerDay" to (d.restingEnergyKcalPerDay !in r.RESTING_ENERGY_KCAL_PER_DAY),
+            "restingFatNightFrac" to (d.restingFatNightFrac !in r.RESTING_FAT_NIGHT_FRAC),
+            "restingFatDayFrac" to (d.restingFatDayFrac !in r.RESTING_FAT_DAY_FRAC),
+            "restingFatDayStartHour" to (d.restingFatDayStartHour !in r.RESTING_FAT_DAY_START_HOUR),
+            "restingFatDayEndHour" to (d.restingFatDayEndHour !in r.RESTING_FAT_DAY_END_HOUR),
+            "activeFatZone1Frac" to (d.activeFatZone1Frac !in r.ACTIVE_FAT_ZONE1_FRAC),
+            "activeFatZone2TopFrac" to (d.activeFatZone2TopFrac !in r.ACTIVE_FAT_ZONE2_TOP_FRAC),
         ).filterValues { it }.keys
 
         assertEquals(emptySet<String>(), outside)
@@ -863,10 +863,10 @@ class DynamicHrrModelTest {
         // only lowers the high readings, so a stretch broken by a run of them would otherwise be
         // handed them already pulled down, and would certify a basal rate off a stretch that was
         // not quiet.
-        val noFilter = setting.copy(hampelSigmas = 100.0)
+        val noFilter = setting.copy(spikeThresholdSigmas = 100.0)
 
         val windows = listOf(true, false).map { suppress ->
-            val profile = subject.copy(dynamicHrrModelSetting = noFilter.copy(suppressPeaks = suppress))
+            val profile = subject.copy(dynamicHrrModelSetting = noFilter.copy(peakClipEnabled = suppress))
             score(quietHourWithAClippableRun, profile = profile)
                 .extras.getValue(DynamicHrrModel.Extra.QUIET_WINDOW_COUNT)
         }
@@ -878,9 +878,9 @@ class DynamicHrrModelTest {
     fun peakClippingStillDecidesWhatTheMinutesCost() {
         // The other half of the same ordering: the run is removed from the energy the fold reads,
         // which is what clipping is for, so the two stages are not simply independent.
-        val noFilter = setting.copy(hampelSigmas = 100.0)
-        val clipped = subject.copy(dynamicHrrModelSetting = noFilter.copy(suppressPeaks = true))
-        val kept = subject.copy(dynamicHrrModelSetting = noFilter.copy(suppressPeaks = false))
+        val noFilter = setting.copy(spikeThresholdSigmas = 100.0)
+        val clipped = subject.copy(dynamicHrrModelSetting = noFilter.copy(peakClipEnabled = true))
+        val kept = subject.copy(dynamicHrrModelSetting = noFilter.copy(peakClipEnabled = false))
 
         assertEquals(0.0, active(score(quietHourWithAClippableRun, profile = clipped)), 0.0)
         assertTrue(active(score(quietHourWithAClippableRun, profile = kept)) > 3.0)
@@ -891,7 +891,7 @@ class DynamicHrrModelTest {
         // The split is `>` the gap, so a silence measuring exactly it does not reach the bound. Read
         // through coverage, which is what the split changes: one session of 8 999 s carrying 7 200
         // readings, rather than two full sessions reading 1.0.
-        val second = 3_599L + DynamicHrrModelSetting().sessionGapS
+        val second = 3_599L + DynamicHrrModelSetting().wearSessionMaxSilenceS
 
         val timeline = score(
             CalorieInputs(
@@ -923,12 +923,12 @@ class DynamicHrrModelTest {
             gravity = motion(0L, 3_600, 0.0) + motion(3_600L, 3_600, 0.5) + motion(7_200L, 3_600, 0.0),
             rr = beats(0L, 10_800),
         )
-        val noFilter = setting.copy(hampelSigmas = 100.0)
+        val noFilter = setting.copy(spikeThresholdSigmas = 100.0)
 
         val series = listOf(true, false).map { suppress ->
             score(
                 quietThenEffortThenQuiet,
-                profile = subject.copy(dynamicHrrModelSetting = noFilter.copy(suppressPeaks = suppress)),
+                profile = subject.copy(dynamicHrrModelSetting = noFilter.copy(peakClipEnabled = suppress)),
             ).labeledSeries.getValue(DynamicHrrModel.Label.BASAL_HR)
         }
 

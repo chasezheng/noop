@@ -319,44 +319,44 @@ class BackupSource private constructor(
             fun double(key: String, fallback: Double, range: ClosedFloatingPointRange<Double>) =
                 (values[key] as? Double ?: fallback).coerceIn(range)
             return DynamicHrrModelSetting(
-                sessionGapS = int("calorie.sessionGapS", defaults.sessionGapS, ranges.SESSION_GAP_S),
+                wearSessionMaxSilenceS = int("calorie.sessionGapS", defaults.wearSessionMaxSilenceS, ranges.WEAR_SESSION_MAX_SILENCE_S),
                 minHrCoverageFrac = double(
                     "calorie.minHrCoverageFrac", defaults.minHrCoverageFrac, ranges.MIN_HR_COVERAGE_FRAC),
-                hampelRadiusS = int("calorie.hampelRadiusS", defaults.hampelRadiusS, ranges.HAMPEL_RADIUS_S),
-                hampelSigmas = double("calorie.hampelSigmas", defaults.hampelSigmas, ranges.HAMPEL_SIGMAS),
-                suppressPeaks = (values["calorie.suppressPeaks"] as? Int)?.let { it != 0 } ?: defaults.suppressPeaks,
-                peakBlockS = int("calorie.peakBlockS", defaults.peakBlockS, ranges.PEAK_BLOCK_S),
-                peakPercentile = double(
-                    "calorie.peakPercentile", defaults.peakPercentile, ranges.PEAK_PERCENTILE),
-                motionStillG = double("calorie.motionStillG", defaults.motionStillG, ranges.MOTION_STILL_G),
-                motionSmoothS = int("calorie.motionSmoothS", defaults.motionSmoothS, ranges.MOTION_SMOOTH_S),
-                basalMinWindowS = int(
-                    "calorie.basalMinWindowS", defaults.basalMinWindowS, ranges.BASAL_MIN_WINDOW_S),
-                basalHrRangeBpm = double(
-                    "calorie.basalHrRangeBpm", defaults.basalHrRangeBpm, ranges.BASAL_HR_RANGE_BPM),
-                basalStillFrac = double(
-                    "calorie.basalStillFrac", defaults.basalStillFrac, ranges.BASAL_STILL_FRAC),
-                basalBeatCoverageFrac = double(
-                    "calorie.basalBeatCoverageFrac", defaults.basalBeatCoverageFrac, ranges.BASAL_BEAT_COVERAGE_FRAC),
-                restSmoothS = int("calorie.restSmoothS", defaults.restSmoothS, ranges.REST_SMOOTH_S),
-                restSmoothMinSamples = int(
-                    "calorie.restSmoothMinSamples", defaults.restSmoothMinSamples, ranges.REST_SMOOTH_MIN_SAMPLES),
-                basalHrSeedOffsetBpm = double(
-                    "calorie.basalHrSeedOffsetBpm", defaults.basalHrSeedOffsetBpm, ranges.BASAL_HR_SEED_OFFSET_BPM),
+                spikeWindowRadiusS = int("calorie.hampelRadiusS", defaults.spikeWindowRadiusS, ranges.SPIKE_WINDOW_RADIUS_S),
+                spikeThresholdSigmas = double("calorie.hampelSigmas", defaults.spikeThresholdSigmas, ranges.SPIKE_THRESHOLD_SIGMAS),
+                peakClipEnabled = (values["calorie.suppressPeaks"] as? Int)?.let { it != 0 } ?: defaults.peakClipEnabled,
+                peakClipBlockS = int("calorie.peakBlockS", defaults.peakClipBlockS, ranges.PEAK_CLIP_BLOCK_S),
+                peakClipKeptFrac = double(
+                    "calorie.peakPercentile", defaults.peakClipKeptFrac, ranges.PEAK_CLIP_KEPT_FRAC),
+                stillMaxG = double("calorie.motionStillG", defaults.stillMaxG, ranges.STILL_MAX_G),
+                stillSmoothingS = int("calorie.motionSmoothS", defaults.stillSmoothingS, ranges.STILL_SMOOTHING_S),
+                quietStretchMinLengthS = int(
+                    "calorie.basalMinWindowS", defaults.quietStretchMinLengthS, ranges.QUIET_STRETCH_MIN_LENGTH_S),
+                quietStretchMaxRiseBpm = double(
+                    "calorie.basalHrRangeBpm", defaults.quietStretchMaxRiseBpm, ranges.QUIET_STRETCH_MAX_RISE_BPM),
+                quietStretchMinStillFrac = double(
+                    "calorie.basalStillFrac", defaults.quietStretchMinStillFrac, ranges.QUIET_STRETCH_MIN_STILL_FRAC),
+                quietStretchMinBeatFrac = double(
+                    "calorie.basalBeatCoverageFrac", defaults.quietStretchMinBeatFrac, ranges.QUIET_STRETCH_MIN_BEAT_FRAC),
+                basalLowerWindowS = int("calorie.restSmoothS", defaults.basalLowerWindowS, ranges.BASAL_LOWER_WINDOW_S),
+                basalLowerMinSamples = int(
+                    "calorie.restSmoothMinSamples", defaults.basalLowerMinSamples, ranges.BASAL_LOWER_MIN_SAMPLES),
+                basalSeedOffsetBpm = double(
+                    "calorie.basalHrSeedOffsetBpm", defaults.basalSeedOffsetBpm, ranges.BASAL_SEED_OFFSET_BPM),
                 reserveRampBandBpm = double(
                     "calorie.reserveRampBandBpm", defaults.reserveRampBandBpm, ranges.RESERVE_RAMP_BAND_BPM),
-                measuredBasalKcalDay = double(
-                    "calorie.measuredBasalKcalDay", defaults.measuredBasalKcalDay, ranges.MEASURED_BASAL_KCAL_DAY),
-                basalFatNight = double("calorie.basalFatNight", defaults.basalFatNight, ranges.BASAL_FAT_NIGHT),
-                basalFatDay = double("calorie.basalFatDay", defaults.basalFatDay, ranges.BASAL_FAT_DAY),
-                basalFatDayStartHour = double(
-                    "calorie.basalFatDayStartHour", defaults.basalFatDayStartHour, ranges.BASAL_FAT_DAY_START_HOUR),
-                basalFatDayEndHour = double(
-                    "calorie.basalFatDayEndHour", defaults.basalFatDayEndHour, ranges.BASAL_FAT_DAY_END_HOUR),
-                activeFatAtZone1 = double(
-                    "calorie.activeFatAtZone1", defaults.activeFatAtZone1, ranges.ACTIVE_FAT_AT_ZONE1),
-                activeFatAtZone2Top = double(
-                    "calorie.activeFatAtZone2Top", defaults.activeFatAtZone2Top, ranges.ACTIVE_FAT_AT_ZONE2_TOP),
+                restingEnergyKcalPerDay = double(
+                    "calorie.measuredBasalKcalDay", defaults.restingEnergyKcalPerDay, ranges.RESTING_ENERGY_KCAL_PER_DAY),
+                restingFatNightFrac = double("calorie.basalFatNight", defaults.restingFatNightFrac, ranges.RESTING_FAT_NIGHT_FRAC),
+                restingFatDayFrac = double("calorie.basalFatDay", defaults.restingFatDayFrac, ranges.RESTING_FAT_DAY_FRAC),
+                restingFatDayStartHour = double(
+                    "calorie.basalFatDayStartHour", defaults.restingFatDayStartHour, ranges.RESTING_FAT_DAY_START_HOUR),
+                restingFatDayEndHour = double(
+                    "calorie.basalFatDayEndHour", defaults.restingFatDayEndHour, ranges.RESTING_FAT_DAY_END_HOUR),
+                activeFatZone1Frac = double(
+                    "calorie.activeFatAtZone1", defaults.activeFatZone1Frac, ranges.ACTIVE_FAT_ZONE1_FRAC),
+                activeFatZone2TopFrac = double(
+                    "calorie.activeFatAtZone2Top", defaults.activeFatZone2TopFrac, ranges.ACTIVE_FAT_ZONE2_TOP_FRAC),
             )
         }
 

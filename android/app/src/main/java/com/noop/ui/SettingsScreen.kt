@@ -187,6 +187,10 @@ import com.noop.analytics.ClockFormatPreference
  */
 class ProfileStore(private val prefs: SharedPreferences) {
 
+    init {
+        migrateRenamedCalorieKeys()
+    }
+
     /**
      * Current age in whole years (#146), DERIVED from [dateOfBirthMillis] so it advances on its own
      * instead of going stale until the user bumps a number. Read-only; change age via [setAge] (the
@@ -363,14 +367,14 @@ class ProfileStore(private val prefs: SharedPreferences) {
     private fun setCalorieCount(key: String, value: Int, range: IntRange) =
         prefs.edit().putInt(key, value.coerceIn(range)).apply()
 
-    var calorieDhrrSessionGapS: Int
+    var calorieDhrrWearSessionMaxSilenceS: Int
         get() = calorieCount(
-            KEY_DHRR_SESSION_GAP_S,
-            DYNAMIC_HRR_DEFAULTS.sessionGapS,
-            DynamicHrrModelSettingRanges.SESSION_GAP_S,
+            KEY_DHRR_WEAR_SESSION_MAX_SILENCE_S,
+            DYNAMIC_HRR_DEFAULTS.wearSessionMaxSilenceS,
+            DynamicHrrModelSettingRanges.WEAR_SESSION_MAX_SILENCE_S,
         )
         set(v) = setCalorieCount(
-            KEY_DHRR_SESSION_GAP_S, v, DynamicHrrModelSettingRanges.SESSION_GAP_S,
+            KEY_DHRR_WEAR_SESSION_MAX_SILENCE_S, v, DynamicHrrModelSettingRanges.WEAR_SESSION_MAX_SILENCE_S,
         )
     var calorieDhrrMinHrCoverageFrac: Double
         get() = calorieKnob(
@@ -381,131 +385,131 @@ class ProfileStore(private val prefs: SharedPreferences) {
         set(v) = setCalorieKnob(
             KEY_DHRR_MIN_HR_COVERAGE_FRAC, v, DynamicHrrModelSettingRanges.MIN_HR_COVERAGE_FRAC,
         )
-    var calorieDhrrHampelRadiusS: Int
+    var calorieDhrrSpikeWindowRadiusS: Int
         get() = calorieCount(
-            KEY_DHRR_HAMPEL_RADIUS_S,
-            DYNAMIC_HRR_DEFAULTS.hampelRadiusS,
-            DynamicHrrModelSettingRanges.HAMPEL_RADIUS_S,
+            KEY_DHRR_SPIKE_WINDOW_RADIUS_S,
+            DYNAMIC_HRR_DEFAULTS.spikeWindowRadiusS,
+            DynamicHrrModelSettingRanges.SPIKE_WINDOW_RADIUS_S,
         )
         set(v) = setCalorieCount(
-            KEY_DHRR_HAMPEL_RADIUS_S, v, DynamicHrrModelSettingRanges.HAMPEL_RADIUS_S,
+            KEY_DHRR_SPIKE_WINDOW_RADIUS_S, v, DynamicHrrModelSettingRanges.SPIKE_WINDOW_RADIUS_S,
         )
-    var calorieDhrrHampelSigmas: Double
+    var calorieDhrrSpikeThresholdSigmas: Double
         get() = calorieKnob(
-            KEY_DHRR_HAMPEL_SIGMAS,
-            DYNAMIC_HRR_DEFAULTS.hampelSigmas,
-            DynamicHrrModelSettingRanges.HAMPEL_SIGMAS,
+            KEY_DHRR_SPIKE_THRESHOLD_SIGMAS,
+            DYNAMIC_HRR_DEFAULTS.spikeThresholdSigmas,
+            DynamicHrrModelSettingRanges.SPIKE_THRESHOLD_SIGMAS,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_HAMPEL_SIGMAS, v, DynamicHrrModelSettingRanges.HAMPEL_SIGMAS,
+            KEY_DHRR_SPIKE_THRESHOLD_SIGMAS, v, DynamicHrrModelSettingRanges.SPIKE_THRESHOLD_SIGMAS,
         )
-    var calorieDhrrSuppressPeaks: Boolean
-        get() = prefs.getBoolean(KEY_DHRR_SUPPRESS_PEAKS, DYNAMIC_HRR_DEFAULTS.suppressPeaks)
-        set(v) = prefs.edit().putBoolean(KEY_DHRR_SUPPRESS_PEAKS, v).apply()
-    var calorieDhrrPeakBlockS: Int
+    var calorieDhrrPeakClipEnabled: Boolean
+        get() = prefs.getBoolean(KEY_DHRR_PEAK_CLIP_ENABLED, DYNAMIC_HRR_DEFAULTS.peakClipEnabled)
+        set(v) = prefs.edit().putBoolean(KEY_DHRR_PEAK_CLIP_ENABLED, v).apply()
+    var calorieDhrrPeakClipBlockS: Int
         get() = calorieCount(
-            KEY_DHRR_PEAK_BLOCK_S,
-            DYNAMIC_HRR_DEFAULTS.peakBlockS,
-            DynamicHrrModelSettingRanges.PEAK_BLOCK_S,
+            KEY_DHRR_PEAK_CLIP_BLOCK_S,
+            DYNAMIC_HRR_DEFAULTS.peakClipBlockS,
+            DynamicHrrModelSettingRanges.PEAK_CLIP_BLOCK_S,
         )
         set(v) = setCalorieCount(
-            KEY_DHRR_PEAK_BLOCK_S, v, DynamicHrrModelSettingRanges.PEAK_BLOCK_S,
+            KEY_DHRR_PEAK_CLIP_BLOCK_S, v, DynamicHrrModelSettingRanges.PEAK_CLIP_BLOCK_S,
         )
-    var calorieDhrrPeakPercentile: Double
+    var calorieDhrrPeakClipKeptFrac: Double
         get() = calorieKnob(
-            KEY_DHRR_PEAK_PERCENTILE,
-            DYNAMIC_HRR_DEFAULTS.peakPercentile,
-            DynamicHrrModelSettingRanges.PEAK_PERCENTILE,
+            KEY_DHRR_PEAK_CLIP_KEPT_FRAC,
+            DYNAMIC_HRR_DEFAULTS.peakClipKeptFrac,
+            DynamicHrrModelSettingRanges.PEAK_CLIP_KEPT_FRAC,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_PEAK_PERCENTILE, v, DynamicHrrModelSettingRanges.PEAK_PERCENTILE,
+            KEY_DHRR_PEAK_CLIP_KEPT_FRAC, v, DynamicHrrModelSettingRanges.PEAK_CLIP_KEPT_FRAC,
         )
-    var calorieDhrrMotionStillG: Double
+    var calorieDhrrStillMaxG: Double
         get() = calorieKnob(
-            KEY_DHRR_MOTION_STILL_G,
-            DYNAMIC_HRR_DEFAULTS.motionStillG,
-            DynamicHrrModelSettingRanges.MOTION_STILL_G,
+            KEY_DHRR_STILL_MAX_G,
+            DYNAMIC_HRR_DEFAULTS.stillMaxG,
+            DynamicHrrModelSettingRanges.STILL_MAX_G,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_MOTION_STILL_G, v, DynamicHrrModelSettingRanges.MOTION_STILL_G,
+            KEY_DHRR_STILL_MAX_G, v, DynamicHrrModelSettingRanges.STILL_MAX_G,
         )
-    var calorieDhrrMotionSmoothS: Int
+    var calorieDhrrStillSmoothingS: Int
         get() = calorieCount(
-            KEY_DHRR_MOTION_SMOOTH_S,
-            DYNAMIC_HRR_DEFAULTS.motionSmoothS,
-            DynamicHrrModelSettingRanges.MOTION_SMOOTH_S,
+            KEY_DHRR_STILL_SMOOTHING_S,
+            DYNAMIC_HRR_DEFAULTS.stillSmoothingS,
+            DynamicHrrModelSettingRanges.STILL_SMOOTHING_S,
         )
         set(v) = setCalorieCount(
-            KEY_DHRR_MOTION_SMOOTH_S, v, DynamicHrrModelSettingRanges.MOTION_SMOOTH_S,
+            KEY_DHRR_STILL_SMOOTHING_S, v, DynamicHrrModelSettingRanges.STILL_SMOOTHING_S,
         )
-    var calorieDhrrBasalMinWindowS: Int
+    var calorieDhrrQuietStretchMinLengthS: Int
         get() = calorieCount(
-            KEY_DHRR_BASAL_MIN_WINDOW_S,
-            DYNAMIC_HRR_DEFAULTS.basalMinWindowS,
-            DynamicHrrModelSettingRanges.BASAL_MIN_WINDOW_S,
+            KEY_DHRR_QUIET_STRETCH_MIN_LENGTH_S,
+            DYNAMIC_HRR_DEFAULTS.quietStretchMinLengthS,
+            DynamicHrrModelSettingRanges.QUIET_STRETCH_MIN_LENGTH_S,
         )
         set(v) = setCalorieCount(
-            KEY_DHRR_BASAL_MIN_WINDOW_S, v, DynamicHrrModelSettingRanges.BASAL_MIN_WINDOW_S,
+            KEY_DHRR_QUIET_STRETCH_MIN_LENGTH_S, v, DynamicHrrModelSettingRanges.QUIET_STRETCH_MIN_LENGTH_S,
         )
-    var calorieDhrrBasalHrRangeBpm: Double
+    var calorieDhrrQuietStretchMaxRiseBpm: Double
         get() = calorieKnob(
-            KEY_DHRR_BASAL_HR_RANGE_BPM,
-            DYNAMIC_HRR_DEFAULTS.basalHrRangeBpm,
-            DynamicHrrModelSettingRanges.BASAL_HR_RANGE_BPM,
+            KEY_DHRR_QUIET_STRETCH_MAX_RISE_BPM,
+            DYNAMIC_HRR_DEFAULTS.quietStretchMaxRiseBpm,
+            DynamicHrrModelSettingRanges.QUIET_STRETCH_MAX_RISE_BPM,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_BASAL_HR_RANGE_BPM, v, DynamicHrrModelSettingRanges.BASAL_HR_RANGE_BPM,
+            KEY_DHRR_QUIET_STRETCH_MAX_RISE_BPM, v, DynamicHrrModelSettingRanges.QUIET_STRETCH_MAX_RISE_BPM,
         )
-    var calorieDhrrBasalStillFrac: Double
+    var calorieDhrrQuietStretchMinStillFrac: Double
         get() = calorieKnob(
-            KEY_DHRR_BASAL_STILL_FRAC,
-            DYNAMIC_HRR_DEFAULTS.basalStillFrac,
-            DynamicHrrModelSettingRanges.BASAL_STILL_FRAC,
+            KEY_DHRR_QUIET_STRETCH_MIN_STILL_FRAC,
+            DYNAMIC_HRR_DEFAULTS.quietStretchMinStillFrac,
+            DynamicHrrModelSettingRanges.QUIET_STRETCH_MIN_STILL_FRAC,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_BASAL_STILL_FRAC, v, DynamicHrrModelSettingRanges.BASAL_STILL_FRAC,
+            KEY_DHRR_QUIET_STRETCH_MIN_STILL_FRAC, v, DynamicHrrModelSettingRanges.QUIET_STRETCH_MIN_STILL_FRAC,
         )
-    var calorieDhrrBasalBeatCoverageFrac: Double
+    var calorieDhrrQuietStretchMinBeatFrac: Double
         get() = calorieKnob(
-            KEY_DHRR_BASAL_BEAT_COVERAGE_FRAC,
-            DYNAMIC_HRR_DEFAULTS.basalBeatCoverageFrac,
-            DynamicHrrModelSettingRanges.BASAL_BEAT_COVERAGE_FRAC,
+            KEY_DHRR_QUIET_STRETCH_MIN_BEAT_FRAC,
+            DYNAMIC_HRR_DEFAULTS.quietStretchMinBeatFrac,
+            DynamicHrrModelSettingRanges.QUIET_STRETCH_MIN_BEAT_FRAC,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_BASAL_BEAT_COVERAGE_FRAC,
+            KEY_DHRR_QUIET_STRETCH_MIN_BEAT_FRAC,
             v,
-            DynamicHrrModelSettingRanges.BASAL_BEAT_COVERAGE_FRAC,
+            DynamicHrrModelSettingRanges.QUIET_STRETCH_MIN_BEAT_FRAC,
         )
-    var calorieDhrrRestSmoothS: Int
+    var calorieDhrrBasalLowerWindowS: Int
         get() = calorieCount(
-            KEY_DHRR_REST_SMOOTH_S,
-            DYNAMIC_HRR_DEFAULTS.restSmoothS,
-            DynamicHrrModelSettingRanges.REST_SMOOTH_S,
+            KEY_DHRR_BASAL_LOWER_WINDOW_S,
+            DYNAMIC_HRR_DEFAULTS.basalLowerWindowS,
+            DynamicHrrModelSettingRanges.BASAL_LOWER_WINDOW_S,
         )
         set(v) = setCalorieCount(
-            KEY_DHRR_REST_SMOOTH_S, v, DynamicHrrModelSettingRanges.REST_SMOOTH_S,
+            KEY_DHRR_BASAL_LOWER_WINDOW_S, v, DynamicHrrModelSettingRanges.BASAL_LOWER_WINDOW_S,
         )
-    var calorieDhrrRestSmoothMinSamples: Int
+    var calorieDhrrBasalLowerMinSamples: Int
         get() = calorieCount(
-            KEY_DHRR_REST_SMOOTH_MIN_SAMPLES,
-            DYNAMIC_HRR_DEFAULTS.restSmoothMinSamples,
-            DynamicHrrModelSettingRanges.REST_SMOOTH_MIN_SAMPLES,
+            KEY_DHRR_BASAL_LOWER_MIN_SAMPLES,
+            DYNAMIC_HRR_DEFAULTS.basalLowerMinSamples,
+            DynamicHrrModelSettingRanges.BASAL_LOWER_MIN_SAMPLES,
         )
         set(v) = setCalorieCount(
-            KEY_DHRR_REST_SMOOTH_MIN_SAMPLES,
+            KEY_DHRR_BASAL_LOWER_MIN_SAMPLES,
             v,
-            DynamicHrrModelSettingRanges.REST_SMOOTH_MIN_SAMPLES,
+            DynamicHrrModelSettingRanges.BASAL_LOWER_MIN_SAMPLES,
         )
-    var calorieDhrrBasalHrSeedOffsetBpm: Double
+    var calorieDhrrBasalSeedOffsetBpm: Double
         get() = calorieKnob(
-            KEY_DHRR_BASAL_HR_SEED_OFFSET_BPM,
-            DYNAMIC_HRR_DEFAULTS.basalHrSeedOffsetBpm,
-            DynamicHrrModelSettingRanges.BASAL_HR_SEED_OFFSET_BPM,
+            KEY_DHRR_BASAL_SEED_OFFSET_BPM,
+            DYNAMIC_HRR_DEFAULTS.basalSeedOffsetBpm,
+            DynamicHrrModelSettingRanges.BASAL_SEED_OFFSET_BPM,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_BASAL_HR_SEED_OFFSET_BPM,
+            KEY_DHRR_BASAL_SEED_OFFSET_BPM,
             v,
-            DynamicHrrModelSettingRanges.BASAL_HR_SEED_OFFSET_BPM,
+            DynamicHrrModelSettingRanges.BASAL_SEED_OFFSET_BPM,
         )
     var calorieDhrrReserveRampBandBpm: Double
         get() = calorieKnob(
@@ -518,74 +522,74 @@ class ProfileStore(private val prefs: SharedPreferences) {
             v,
             DynamicHrrModelSettingRanges.RESERVE_RAMP_BAND_BPM,
         )
-    var calorieDhrrMeasuredBasalKcalDay: Double
+    var calorieDhrrRestingEnergyKcalPerDay: Double
         get() = calorieKnob(
-            KEY_DHRR_MEASURED_BASAL_KCAL_DAY,
-            DYNAMIC_HRR_DEFAULTS.measuredBasalKcalDay,
-            DynamicHrrModelSettingRanges.MEASURED_BASAL_KCAL_DAY,
+            KEY_DHRR_RESTING_ENERGY_KCAL_PER_DAY,
+            DYNAMIC_HRR_DEFAULTS.restingEnergyKcalPerDay,
+            DynamicHrrModelSettingRanges.RESTING_ENERGY_KCAL_PER_DAY,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_MEASURED_BASAL_KCAL_DAY,
+            KEY_DHRR_RESTING_ENERGY_KCAL_PER_DAY,
             v,
-            DynamicHrrModelSettingRanges.MEASURED_BASAL_KCAL_DAY,
+            DynamicHrrModelSettingRanges.RESTING_ENERGY_KCAL_PER_DAY,
         )
-    var calorieDhrrBasalFatNight: Double
+    var calorieDhrrRestingFatNightFrac: Double
         get() = calorieKnob(
-            KEY_DHRR_BASAL_FAT_NIGHT,
-            DYNAMIC_HRR_DEFAULTS.basalFatNight,
-            DynamicHrrModelSettingRanges.BASAL_FAT_NIGHT,
+            KEY_DHRR_RESTING_FAT_NIGHT_FRAC,
+            DYNAMIC_HRR_DEFAULTS.restingFatNightFrac,
+            DynamicHrrModelSettingRanges.RESTING_FAT_NIGHT_FRAC,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_BASAL_FAT_NIGHT, v, DynamicHrrModelSettingRanges.BASAL_FAT_NIGHT,
+            KEY_DHRR_RESTING_FAT_NIGHT_FRAC, v, DynamicHrrModelSettingRanges.RESTING_FAT_NIGHT_FRAC,
         )
-    var calorieDhrrBasalFatDay: Double
+    var calorieDhrrRestingFatDayFrac: Double
         get() = calorieKnob(
-            KEY_DHRR_BASAL_FAT_DAY,
-            DYNAMIC_HRR_DEFAULTS.basalFatDay,
-            DynamicHrrModelSettingRanges.BASAL_FAT_DAY,
+            KEY_DHRR_RESTING_FAT_DAY_FRAC,
+            DYNAMIC_HRR_DEFAULTS.restingFatDayFrac,
+            DynamicHrrModelSettingRanges.RESTING_FAT_DAY_FRAC,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_BASAL_FAT_DAY, v, DynamicHrrModelSettingRanges.BASAL_FAT_DAY,
+            KEY_DHRR_RESTING_FAT_DAY_FRAC, v, DynamicHrrModelSettingRanges.RESTING_FAT_DAY_FRAC,
         )
-    var calorieDhrrBasalFatDayStartHour: Double
+    var calorieDhrrRestingFatDayStartHour: Double
         get() = calorieKnob(
-            KEY_DHRR_BASAL_FAT_DAY_START_HOUR,
-            DYNAMIC_HRR_DEFAULTS.basalFatDayStartHour,
-            DynamicHrrModelSettingRanges.BASAL_FAT_DAY_START_HOUR,
+            KEY_DHRR_RESTING_FAT_DAY_START_HOUR,
+            DYNAMIC_HRR_DEFAULTS.restingFatDayStartHour,
+            DynamicHrrModelSettingRanges.RESTING_FAT_DAY_START_HOUR,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_BASAL_FAT_DAY_START_HOUR,
+            KEY_DHRR_RESTING_FAT_DAY_START_HOUR,
             v,
-            DynamicHrrModelSettingRanges.BASAL_FAT_DAY_START_HOUR,
+            DynamicHrrModelSettingRanges.RESTING_FAT_DAY_START_HOUR,
         )
-    var calorieDhrrBasalFatDayEndHour: Double
+    var calorieDhrrRestingFatDayEndHour: Double
         get() = calorieKnob(
-            KEY_DHRR_BASAL_FAT_DAY_END_HOUR,
-            DYNAMIC_HRR_DEFAULTS.basalFatDayEndHour,
-            DynamicHrrModelSettingRanges.BASAL_FAT_DAY_END_HOUR,
+            KEY_DHRR_RESTING_FAT_DAY_END_HOUR,
+            DYNAMIC_HRR_DEFAULTS.restingFatDayEndHour,
+            DynamicHrrModelSettingRanges.RESTING_FAT_DAY_END_HOUR,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_BASAL_FAT_DAY_END_HOUR, v, DynamicHrrModelSettingRanges.BASAL_FAT_DAY_END_HOUR,
+            KEY_DHRR_RESTING_FAT_DAY_END_HOUR, v, DynamicHrrModelSettingRanges.RESTING_FAT_DAY_END_HOUR,
         )
-    var calorieDhrrActiveFatAtZone1: Double
+    var calorieDhrrActiveFatZone1Frac: Double
         get() = calorieKnob(
-            KEY_DHRR_ACTIVE_FAT_AT_ZONE1,
-            DYNAMIC_HRR_DEFAULTS.activeFatAtZone1,
-            DynamicHrrModelSettingRanges.ACTIVE_FAT_AT_ZONE1,
+            KEY_DHRR_ACTIVE_FAT_ZONE1_FRAC,
+            DYNAMIC_HRR_DEFAULTS.activeFatZone1Frac,
+            DynamicHrrModelSettingRanges.ACTIVE_FAT_ZONE1_FRAC,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_ACTIVE_FAT_AT_ZONE1, v, DynamicHrrModelSettingRanges.ACTIVE_FAT_AT_ZONE1,
+            KEY_DHRR_ACTIVE_FAT_ZONE1_FRAC, v, DynamicHrrModelSettingRanges.ACTIVE_FAT_ZONE1_FRAC,
         )
-    var calorieDhrrActiveFatAtZone2Top: Double
+    var calorieDhrrActiveFatZone2TopFrac: Double
         get() = calorieKnob(
-            KEY_DHRR_ACTIVE_FAT_AT_ZONE2_TOP,
-            DYNAMIC_HRR_DEFAULTS.activeFatAtZone2Top,
-            DynamicHrrModelSettingRanges.ACTIVE_FAT_AT_ZONE2_TOP,
+            KEY_DHRR_ACTIVE_FAT_ZONE2_TOP_FRAC,
+            DYNAMIC_HRR_DEFAULTS.activeFatZone2TopFrac,
+            DynamicHrrModelSettingRanges.ACTIVE_FAT_ZONE2_TOP_FRAC,
         )
         set(v) = setCalorieKnob(
-            KEY_DHRR_ACTIVE_FAT_AT_ZONE2_TOP,
+            KEY_DHRR_ACTIVE_FAT_ZONE2_TOP_FRAC,
             v,
-            DynamicHrrModelSettingRanges.ACTIVE_FAT_AT_ZONE2_TOP,
+            DynamicHrrModelSettingRanges.ACTIVE_FAT_ZONE2_TOP_FRAC,
         )
 
     /**
@@ -619,30 +623,30 @@ class ProfileStore(private val prefs: SharedPreferences) {
 
     /** The stored measured-basal settings as one [DynamicHrrModelSetting]. */
     fun toDynamicHrrModelSetting(): DynamicHrrModelSetting = DynamicHrrModelSetting(
-        sessionGapS = calorieDhrrSessionGapS,
+        wearSessionMaxSilenceS = calorieDhrrWearSessionMaxSilenceS,
         minHrCoverageFrac = calorieDhrrMinHrCoverageFrac,
-        hampelRadiusS = calorieDhrrHampelRadiusS,
-        hampelSigmas = calorieDhrrHampelSigmas,
-        suppressPeaks = calorieDhrrSuppressPeaks,
-        peakBlockS = calorieDhrrPeakBlockS,
-        peakPercentile = calorieDhrrPeakPercentile,
-        motionStillG = calorieDhrrMotionStillG,
-        motionSmoothS = calorieDhrrMotionSmoothS,
-        basalMinWindowS = calorieDhrrBasalMinWindowS,
-        basalHrRangeBpm = calorieDhrrBasalHrRangeBpm,
-        basalStillFrac = calorieDhrrBasalStillFrac,
-        basalBeatCoverageFrac = calorieDhrrBasalBeatCoverageFrac,
-        restSmoothS = calorieDhrrRestSmoothS,
-        restSmoothMinSamples = calorieDhrrRestSmoothMinSamples,
-        basalHrSeedOffsetBpm = calorieDhrrBasalHrSeedOffsetBpm,
+        spikeWindowRadiusS = calorieDhrrSpikeWindowRadiusS,
+        spikeThresholdSigmas = calorieDhrrSpikeThresholdSigmas,
+        peakClipEnabled = calorieDhrrPeakClipEnabled,
+        peakClipBlockS = calorieDhrrPeakClipBlockS,
+        peakClipKeptFrac = calorieDhrrPeakClipKeptFrac,
+        stillMaxG = calorieDhrrStillMaxG,
+        stillSmoothingS = calorieDhrrStillSmoothingS,
+        quietStretchMinLengthS = calorieDhrrQuietStretchMinLengthS,
+        quietStretchMaxRiseBpm = calorieDhrrQuietStretchMaxRiseBpm,
+        quietStretchMinStillFrac = calorieDhrrQuietStretchMinStillFrac,
+        quietStretchMinBeatFrac = calorieDhrrQuietStretchMinBeatFrac,
+        basalLowerWindowS = calorieDhrrBasalLowerWindowS,
+        basalLowerMinSamples = calorieDhrrBasalLowerMinSamples,
+        basalSeedOffsetBpm = calorieDhrrBasalSeedOffsetBpm,
         reserveRampBandBpm = calorieDhrrReserveRampBandBpm,
-        measuredBasalKcalDay = calorieDhrrMeasuredBasalKcalDay,
-        basalFatNight = calorieDhrrBasalFatNight,
-        basalFatDay = calorieDhrrBasalFatDay,
-        basalFatDayStartHour = calorieDhrrBasalFatDayStartHour,
-        basalFatDayEndHour = calorieDhrrBasalFatDayEndHour,
-        activeFatAtZone1 = calorieDhrrActiveFatAtZone1,
-        activeFatAtZone2Top = calorieDhrrActiveFatAtZone2Top,
+        restingEnergyKcalPerDay = calorieDhrrRestingEnergyKcalPerDay,
+        restingFatNightFrac = calorieDhrrRestingFatNightFrac,
+        restingFatDayFrac = calorieDhrrRestingFatDayFrac,
+        restingFatDayStartHour = calorieDhrrRestingFatDayStartHour,
+        restingFatDayEndHour = calorieDhrrRestingFatDayEndHour,
+        activeFatZone1Frac = calorieDhrrActiveFatZone1Frac,
+        activeFatZone2TopFrac = calorieDhrrActiveFatZone2TopFrac,
     )
 
     /**
@@ -663,30 +667,30 @@ class ProfileStore(private val prefs: SharedPreferences) {
             .remove(KEY_CAL_MET_GAIN)
             .remove(KEY_CAL_HR_FALLBACK)
             .remove(KEY_CAL_PREFER_ON_DEVICE)
-            .remove(KEY_DHRR_SESSION_GAP_S)
+            .remove(KEY_DHRR_WEAR_SESSION_MAX_SILENCE_S)
             .remove(KEY_DHRR_MIN_HR_COVERAGE_FRAC)
-            .remove(KEY_DHRR_HAMPEL_RADIUS_S)
-            .remove(KEY_DHRR_HAMPEL_SIGMAS)
-            .remove(KEY_DHRR_SUPPRESS_PEAKS)
-            .remove(KEY_DHRR_PEAK_BLOCK_S)
-            .remove(KEY_DHRR_PEAK_PERCENTILE)
-            .remove(KEY_DHRR_MOTION_STILL_G)
-            .remove(KEY_DHRR_MOTION_SMOOTH_S)
-            .remove(KEY_DHRR_BASAL_MIN_WINDOW_S)
-            .remove(KEY_DHRR_BASAL_HR_RANGE_BPM)
-            .remove(KEY_DHRR_BASAL_STILL_FRAC)
-            .remove(KEY_DHRR_BASAL_BEAT_COVERAGE_FRAC)
-            .remove(KEY_DHRR_REST_SMOOTH_S)
-            .remove(KEY_DHRR_REST_SMOOTH_MIN_SAMPLES)
-            .remove(KEY_DHRR_BASAL_HR_SEED_OFFSET_BPM)
+            .remove(KEY_DHRR_SPIKE_WINDOW_RADIUS_S)
+            .remove(KEY_DHRR_SPIKE_THRESHOLD_SIGMAS)
+            .remove(KEY_DHRR_PEAK_CLIP_ENABLED)
+            .remove(KEY_DHRR_PEAK_CLIP_BLOCK_S)
+            .remove(KEY_DHRR_PEAK_CLIP_KEPT_FRAC)
+            .remove(KEY_DHRR_STILL_MAX_G)
+            .remove(KEY_DHRR_STILL_SMOOTHING_S)
+            .remove(KEY_DHRR_QUIET_STRETCH_MIN_LENGTH_S)
+            .remove(KEY_DHRR_QUIET_STRETCH_MAX_RISE_BPM)
+            .remove(KEY_DHRR_QUIET_STRETCH_MIN_STILL_FRAC)
+            .remove(KEY_DHRR_QUIET_STRETCH_MIN_BEAT_FRAC)
+            .remove(KEY_DHRR_BASAL_LOWER_WINDOW_S)
+            .remove(KEY_DHRR_BASAL_LOWER_MIN_SAMPLES)
+            .remove(KEY_DHRR_BASAL_SEED_OFFSET_BPM)
             .remove(KEY_DHRR_RESERVE_RAMP_BAND_BPM)
-            .remove(KEY_DHRR_MEASURED_BASAL_KCAL_DAY)
-            .remove(KEY_DHRR_BASAL_FAT_NIGHT)
-            .remove(KEY_DHRR_BASAL_FAT_DAY)
-            .remove(KEY_DHRR_BASAL_FAT_DAY_START_HOUR)
-            .remove(KEY_DHRR_BASAL_FAT_DAY_END_HOUR)
-            .remove(KEY_DHRR_ACTIVE_FAT_AT_ZONE1)
-            .remove(KEY_DHRR_ACTIVE_FAT_AT_ZONE2_TOP)
+            .remove(KEY_DHRR_RESTING_ENERGY_KCAL_PER_DAY)
+            .remove(KEY_DHRR_RESTING_FAT_NIGHT_FRAC)
+            .remove(KEY_DHRR_RESTING_FAT_DAY_FRAC)
+            .remove(KEY_DHRR_RESTING_FAT_DAY_START_HOUR)
+            .remove(KEY_DHRR_RESTING_FAT_DAY_END_HOUR)
+            .remove(KEY_DHRR_ACTIVE_FAT_ZONE1_FRAC)
+            .remove(KEY_DHRR_ACTIVE_FAT_ZONE2_TOP_FRAC)
             .apply()
     }
 
@@ -834,30 +838,30 @@ class ProfileStore(private val prefs: SharedPreferences) {
         if (prefs.contains(KEY_CAL_HR_FALLBACK)) {
             out["calorie.hrFallbackWhenNoMET"] = if (calorieHrFallbackWhenNoMET) 1 else 0
         }
-        if (prefs.contains(KEY_DHRR_SESSION_GAP_S)) out["calorie.sessionGapS"] = calorieDhrrSessionGapS
+        if (prefs.contains(KEY_DHRR_WEAR_SESSION_MAX_SILENCE_S)) out["calorie.sessionGapS"] = calorieDhrrWearSessionMaxSilenceS
         if (prefs.contains(KEY_DHRR_MIN_HR_COVERAGE_FRAC)) out["calorie.minHrCoverageFrac"] = calorieDhrrMinHrCoverageFrac
-        if (prefs.contains(KEY_DHRR_HAMPEL_RADIUS_S)) out["calorie.hampelRadiusS"] = calorieDhrrHampelRadiusS
-        if (prefs.contains(KEY_DHRR_HAMPEL_SIGMAS)) out["calorie.hampelSigmas"] = calorieDhrrHampelSigmas
-        if (prefs.contains(KEY_DHRR_SUPPRESS_PEAKS)) out["calorie.suppressPeaks"] = if (calorieDhrrSuppressPeaks) 1 else 0
-        if (prefs.contains(KEY_DHRR_PEAK_BLOCK_S)) out["calorie.peakBlockS"] = calorieDhrrPeakBlockS
-        if (prefs.contains(KEY_DHRR_PEAK_PERCENTILE)) out["calorie.peakPercentile"] = calorieDhrrPeakPercentile
-        if (prefs.contains(KEY_DHRR_MOTION_STILL_G)) out["calorie.motionStillG"] = calorieDhrrMotionStillG
-        if (prefs.contains(KEY_DHRR_MOTION_SMOOTH_S)) out["calorie.motionSmoothS"] = calorieDhrrMotionSmoothS
-        if (prefs.contains(KEY_DHRR_BASAL_MIN_WINDOW_S)) out["calorie.basalMinWindowS"] = calorieDhrrBasalMinWindowS
-        if (prefs.contains(KEY_DHRR_BASAL_HR_RANGE_BPM)) out["calorie.basalHrRangeBpm"] = calorieDhrrBasalHrRangeBpm
-        if (prefs.contains(KEY_DHRR_BASAL_STILL_FRAC)) out["calorie.basalStillFrac"] = calorieDhrrBasalStillFrac
-        if (prefs.contains(KEY_DHRR_BASAL_BEAT_COVERAGE_FRAC)) out["calorie.basalBeatCoverageFrac"] = calorieDhrrBasalBeatCoverageFrac
-        if (prefs.contains(KEY_DHRR_REST_SMOOTH_S)) out["calorie.restSmoothS"] = calorieDhrrRestSmoothS
-        if (prefs.contains(KEY_DHRR_REST_SMOOTH_MIN_SAMPLES)) out["calorie.restSmoothMinSamples"] = calorieDhrrRestSmoothMinSamples
-        if (prefs.contains(KEY_DHRR_BASAL_HR_SEED_OFFSET_BPM)) out["calorie.basalHrSeedOffsetBpm"] = calorieDhrrBasalHrSeedOffsetBpm
+        if (prefs.contains(KEY_DHRR_SPIKE_WINDOW_RADIUS_S)) out["calorie.hampelRadiusS"] = calorieDhrrSpikeWindowRadiusS
+        if (prefs.contains(KEY_DHRR_SPIKE_THRESHOLD_SIGMAS)) out["calorie.hampelSigmas"] = calorieDhrrSpikeThresholdSigmas
+        if (prefs.contains(KEY_DHRR_PEAK_CLIP_ENABLED)) out["calorie.suppressPeaks"] = if (calorieDhrrPeakClipEnabled) 1 else 0
+        if (prefs.contains(KEY_DHRR_PEAK_CLIP_BLOCK_S)) out["calorie.peakBlockS"] = calorieDhrrPeakClipBlockS
+        if (prefs.contains(KEY_DHRR_PEAK_CLIP_KEPT_FRAC)) out["calorie.peakPercentile"] = calorieDhrrPeakClipKeptFrac
+        if (prefs.contains(KEY_DHRR_STILL_MAX_G)) out["calorie.motionStillG"] = calorieDhrrStillMaxG
+        if (prefs.contains(KEY_DHRR_STILL_SMOOTHING_S)) out["calorie.motionSmoothS"] = calorieDhrrStillSmoothingS
+        if (prefs.contains(KEY_DHRR_QUIET_STRETCH_MIN_LENGTH_S)) out["calorie.basalMinWindowS"] = calorieDhrrQuietStretchMinLengthS
+        if (prefs.contains(KEY_DHRR_QUIET_STRETCH_MAX_RISE_BPM)) out["calorie.basalHrRangeBpm"] = calorieDhrrQuietStretchMaxRiseBpm
+        if (prefs.contains(KEY_DHRR_QUIET_STRETCH_MIN_STILL_FRAC)) out["calorie.basalStillFrac"] = calorieDhrrQuietStretchMinStillFrac
+        if (prefs.contains(KEY_DHRR_QUIET_STRETCH_MIN_BEAT_FRAC)) out["calorie.basalBeatCoverageFrac"] = calorieDhrrQuietStretchMinBeatFrac
+        if (prefs.contains(KEY_DHRR_BASAL_LOWER_WINDOW_S)) out["calorie.restSmoothS"] = calorieDhrrBasalLowerWindowS
+        if (prefs.contains(KEY_DHRR_BASAL_LOWER_MIN_SAMPLES)) out["calorie.restSmoothMinSamples"] = calorieDhrrBasalLowerMinSamples
+        if (prefs.contains(KEY_DHRR_BASAL_SEED_OFFSET_BPM)) out["calorie.basalHrSeedOffsetBpm"] = calorieDhrrBasalSeedOffsetBpm
         if (prefs.contains(KEY_DHRR_RESERVE_RAMP_BAND_BPM)) out["calorie.reserveRampBandBpm"] = calorieDhrrReserveRampBandBpm
-        if (prefs.contains(KEY_DHRR_MEASURED_BASAL_KCAL_DAY)) out["calorie.measuredBasalKcalDay"] = calorieDhrrMeasuredBasalKcalDay
-        if (prefs.contains(KEY_DHRR_BASAL_FAT_NIGHT)) out["calorie.basalFatNight"] = calorieDhrrBasalFatNight
-        if (prefs.contains(KEY_DHRR_BASAL_FAT_DAY)) out["calorie.basalFatDay"] = calorieDhrrBasalFatDay
-        if (prefs.contains(KEY_DHRR_BASAL_FAT_DAY_START_HOUR)) out["calorie.basalFatDayStartHour"] = calorieDhrrBasalFatDayStartHour
-        if (prefs.contains(KEY_DHRR_BASAL_FAT_DAY_END_HOUR)) out["calorie.basalFatDayEndHour"] = calorieDhrrBasalFatDayEndHour
-        if (prefs.contains(KEY_DHRR_ACTIVE_FAT_AT_ZONE1)) out["calorie.activeFatAtZone1"] = calorieDhrrActiveFatAtZone1
-        if (prefs.contains(KEY_DHRR_ACTIVE_FAT_AT_ZONE2_TOP)) out["calorie.activeFatAtZone2Top"] = calorieDhrrActiveFatAtZone2Top
+        if (prefs.contains(KEY_DHRR_RESTING_ENERGY_KCAL_PER_DAY)) out["calorie.measuredBasalKcalDay"] = calorieDhrrRestingEnergyKcalPerDay
+        if (prefs.contains(KEY_DHRR_RESTING_FAT_NIGHT_FRAC)) out["calorie.basalFatNight"] = calorieDhrrRestingFatNightFrac
+        if (prefs.contains(KEY_DHRR_RESTING_FAT_DAY_FRAC)) out["calorie.basalFatDay"] = calorieDhrrRestingFatDayFrac
+        if (prefs.contains(KEY_DHRR_RESTING_FAT_DAY_START_HOUR)) out["calorie.basalFatDayStartHour"] = calorieDhrrRestingFatDayStartHour
+        if (prefs.contains(KEY_DHRR_RESTING_FAT_DAY_END_HOUR)) out["calorie.basalFatDayEndHour"] = calorieDhrrRestingFatDayEndHour
+        if (prefs.contains(KEY_DHRR_ACTIVE_FAT_ZONE1_FRAC)) out["calorie.activeFatAtZone1"] = calorieDhrrActiveFatZone1Frac
+        if (prefs.contains(KEY_DHRR_ACTIVE_FAT_ZONE2_TOP_FRAC)) out["calorie.activeFatAtZone2Top"] = calorieDhrrActiveFatZone2TopFrac
         return out
     }
 
@@ -891,30 +895,64 @@ class ProfileStore(private val prefs: SharedPreferences) {
         (values["calorie.activeAccrualMET"] as? Number)?.let { calorieActiveAccrualMET = it.toDouble() }
         (values["calorie.dynAccelMETGainPerG"] as? Number)?.let { calorieDynAccelMETGainPerG = it.toDouble() }
         (values["calorie.hrFallbackWhenNoMET"] as? Number)?.let { calorieHrFallbackWhenNoMET = it.toInt() != 0 }
-        (values["calorie.sessionGapS"] as? Number)?.let { calorieDhrrSessionGapS = it.toInt() }
+        (values["calorie.sessionGapS"] as? Number)?.let { calorieDhrrWearSessionMaxSilenceS = it.toInt() }
         (values["calorie.minHrCoverageFrac"] as? Number)?.let { calorieDhrrMinHrCoverageFrac = it.toDouble() }
-        (values["calorie.hampelRadiusS"] as? Number)?.let { calorieDhrrHampelRadiusS = it.toInt() }
-        (values["calorie.hampelSigmas"] as? Number)?.let { calorieDhrrHampelSigmas = it.toDouble() }
-        (values["calorie.suppressPeaks"] as? Number)?.let { calorieDhrrSuppressPeaks = it.toInt() != 0 }
-        (values["calorie.peakBlockS"] as? Number)?.let { calorieDhrrPeakBlockS = it.toInt() }
-        (values["calorie.peakPercentile"] as? Number)?.let { calorieDhrrPeakPercentile = it.toDouble() }
-        (values["calorie.motionStillG"] as? Number)?.let { calorieDhrrMotionStillG = it.toDouble() }
-        (values["calorie.motionSmoothS"] as? Number)?.let { calorieDhrrMotionSmoothS = it.toInt() }
-        (values["calorie.basalMinWindowS"] as? Number)?.let { calorieDhrrBasalMinWindowS = it.toInt() }
-        (values["calorie.basalHrRangeBpm"] as? Number)?.let { calorieDhrrBasalHrRangeBpm = it.toDouble() }
-        (values["calorie.basalStillFrac"] as? Number)?.let { calorieDhrrBasalStillFrac = it.toDouble() }
-        (values["calorie.basalBeatCoverageFrac"] as? Number)?.let { calorieDhrrBasalBeatCoverageFrac = it.toDouble() }
-        (values["calorie.restSmoothS"] as? Number)?.let { calorieDhrrRestSmoothS = it.toInt() }
-        (values["calorie.restSmoothMinSamples"] as? Number)?.let { calorieDhrrRestSmoothMinSamples = it.toInt() }
-        (values["calorie.basalHrSeedOffsetBpm"] as? Number)?.let { calorieDhrrBasalHrSeedOffsetBpm = it.toDouble() }
+        (values["calorie.hampelRadiusS"] as? Number)?.let { calorieDhrrSpikeWindowRadiusS = it.toInt() }
+        (values["calorie.hampelSigmas"] as? Number)?.let { calorieDhrrSpikeThresholdSigmas = it.toDouble() }
+        (values["calorie.suppressPeaks"] as? Number)?.let { calorieDhrrPeakClipEnabled = it.toInt() != 0 }
+        (values["calorie.peakBlockS"] as? Number)?.let { calorieDhrrPeakClipBlockS = it.toInt() }
+        (values["calorie.peakPercentile"] as? Number)?.let { calorieDhrrPeakClipKeptFrac = it.toDouble() }
+        (values["calorie.motionStillG"] as? Number)?.let { calorieDhrrStillMaxG = it.toDouble() }
+        (values["calorie.motionSmoothS"] as? Number)?.let { calorieDhrrStillSmoothingS = it.toInt() }
+        (values["calorie.basalMinWindowS"] as? Number)?.let { calorieDhrrQuietStretchMinLengthS = it.toInt() }
+        (values["calorie.basalHrRangeBpm"] as? Number)?.let { calorieDhrrQuietStretchMaxRiseBpm = it.toDouble() }
+        (values["calorie.basalStillFrac"] as? Number)?.let { calorieDhrrQuietStretchMinStillFrac = it.toDouble() }
+        (values["calorie.basalBeatCoverageFrac"] as? Number)?.let { calorieDhrrQuietStretchMinBeatFrac = it.toDouble() }
+        (values["calorie.restSmoothS"] as? Number)?.let { calorieDhrrBasalLowerWindowS = it.toInt() }
+        (values["calorie.restSmoothMinSamples"] as? Number)?.let { calorieDhrrBasalLowerMinSamples = it.toInt() }
+        (values["calorie.basalHrSeedOffsetBpm"] as? Number)?.let { calorieDhrrBasalSeedOffsetBpm = it.toDouble() }
         (values["calorie.reserveRampBandBpm"] as? Number)?.let { calorieDhrrReserveRampBandBpm = it.toDouble() }
-        (values["calorie.measuredBasalKcalDay"] as? Number)?.let { calorieDhrrMeasuredBasalKcalDay = it.toDouble() }
-        (values["calorie.basalFatNight"] as? Number)?.let { calorieDhrrBasalFatNight = it.toDouble() }
-        (values["calorie.basalFatDay"] as? Number)?.let { calorieDhrrBasalFatDay = it.toDouble() }
-        (values["calorie.basalFatDayStartHour"] as? Number)?.let { calorieDhrrBasalFatDayStartHour = it.toDouble() }
-        (values["calorie.basalFatDayEndHour"] as? Number)?.let { calorieDhrrBasalFatDayEndHour = it.toDouble() }
-        (values["calorie.activeFatAtZone1"] as? Number)?.let { calorieDhrrActiveFatAtZone1 = it.toDouble() }
-        (values["calorie.activeFatAtZone2Top"] as? Number)?.let { calorieDhrrActiveFatAtZone2Top = it.toDouble() }
+        (values["calorie.measuredBasalKcalDay"] as? Number)?.let { calorieDhrrRestingEnergyKcalPerDay = it.toDouble() }
+        (values["calorie.basalFatNight"] as? Number)?.let { calorieDhrrRestingFatNightFrac = it.toDouble() }
+        (values["calorie.basalFatDay"] as? Number)?.let { calorieDhrrRestingFatDayFrac = it.toDouble() }
+        (values["calorie.basalFatDayStartHour"] as? Number)?.let { calorieDhrrRestingFatDayStartHour = it.toDouble() }
+        (values["calorie.basalFatDayEndHour"] as? Number)?.let { calorieDhrrRestingFatDayEndHour = it.toDouble() }
+        (values["calorie.activeFatAtZone1"] as? Number)?.let { calorieDhrrActiveFatZone1Frac = it.toDouble() }
+        (values["calorie.activeFatAtZone2Top"] as? Number)?.let { calorieDhrrActiveFatZone2TopFrac = it.toDouble() }
+    }
+
+    /**
+     * Carries any measured-basal value still stored under the name its key had before it was renamed
+     * over to the name it has now, then drops the old name.
+     *
+     * A key is moved only where one is actually stored. Every getter falls back to its default when
+     * its key is absent, and [backupSnapshot] exports on key PRESENCE, so writing a key the wearer
+     * never set would mark a shipped default as a deliberate choice and let a backup stamp it over
+     * another device's setting.
+     *
+     * Values are re-put by their stored runtime type rather than by a per-key type table, because the
+     * three kinds these keys hold — an Int count, a Double as raw Long bits, a Boolean — are already
+     * distinguishable in what [SharedPreferences.getAll] returns, and a table could disagree with the
+     * accessor that wrote the value. A value of any other kind is left where it is rather than
+     * dropped.
+     */
+    private fun migrateRenamedCalorieKeys() {
+        if (prefs.contains(KEY_DHRR_KEYS_MIGRATED)) return
+        val stored = prefs.all
+        val editor = prefs.edit()
+        for ((legacy, current) in RENAMED_CALORIE_KEYS) {
+            val value = stored[legacy] ?: continue
+            val carried = when {
+                // The wearer has already moved this setting since the rename; that value wins.
+                stored.containsKey(current) -> true
+                value is Int -> { editor.putInt(current, value); true }
+                value is Long -> { editor.putLong(current, value); true }
+                value is Boolean -> { editor.putBoolean(current, value); true }
+                else -> false
+            }
+            if (carried) editor.remove(legacy)
+        }
+        editor.putBoolean(KEY_DHRR_KEYS_MIGRATED, true).apply()
     }
 
     companion object {
@@ -963,30 +1001,65 @@ class ProfileStore(private val prefs: SharedPreferences) {
         private const val KEY_CAL_HR_FALLBACK = "calorie_hr_fallback_when_no_met"
         private const val KEY_CAL_PREFER_ON_DEVICE = "calorie_prefer_on_device"
 
-        private const val KEY_DHRR_SESSION_GAP_S = "calorie_dhrr_session_gap_s"
+        private const val KEY_DHRR_WEAR_SESSION_MAX_SILENCE_S = "calorie_dhrr_wear_session_max_silence_s"
         private const val KEY_DHRR_MIN_HR_COVERAGE_FRAC = "calorie_dhrr_min_hr_coverage_frac"
-        private const val KEY_DHRR_HAMPEL_RADIUS_S = "calorie_dhrr_hampel_radius_s"
-        private const val KEY_DHRR_HAMPEL_SIGMAS = "calorie_dhrr_hampel_sigmas"
-        private const val KEY_DHRR_SUPPRESS_PEAKS = "calorie_dhrr_suppress_peaks"
-        private const val KEY_DHRR_PEAK_BLOCK_S = "calorie_dhrr_peak_block_s"
-        private const val KEY_DHRR_PEAK_PERCENTILE = "calorie_dhrr_peak_percentile"
-        private const val KEY_DHRR_MOTION_STILL_G = "calorie_dhrr_motion_still_g"
-        private const val KEY_DHRR_MOTION_SMOOTH_S = "calorie_dhrr_motion_smooth_s"
-        private const val KEY_DHRR_BASAL_MIN_WINDOW_S = "calorie_dhrr_basal_min_window_s"
-        private const val KEY_DHRR_BASAL_HR_RANGE_BPM = "calorie_dhrr_basal_hr_range_bpm"
-        private const val KEY_DHRR_BASAL_STILL_FRAC = "calorie_dhrr_basal_still_frac"
-        private const val KEY_DHRR_BASAL_BEAT_COVERAGE_FRAC = "calorie_dhrr_basal_beat_coverage_frac"
-        private const val KEY_DHRR_REST_SMOOTH_S = "calorie_dhrr_rest_smooth_s"
-        private const val KEY_DHRR_REST_SMOOTH_MIN_SAMPLES = "calorie_dhrr_rest_smooth_min_samples"
-        private const val KEY_DHRR_BASAL_HR_SEED_OFFSET_BPM = "calorie_dhrr_basal_hr_seed_offset_bpm"
+        private const val KEY_DHRR_SPIKE_WINDOW_RADIUS_S = "calorie_dhrr_spike_window_radius_s"
+        private const val KEY_DHRR_SPIKE_THRESHOLD_SIGMAS = "calorie_dhrr_spike_threshold_sigmas"
+        private const val KEY_DHRR_PEAK_CLIP_ENABLED = "calorie_dhrr_peak_clip_enabled"
+        private const val KEY_DHRR_PEAK_CLIP_BLOCK_S = "calorie_dhrr_peak_clip_block_s"
+        private const val KEY_DHRR_PEAK_CLIP_KEPT_FRAC = "calorie_dhrr_peak_clip_kept_frac"
+        private const val KEY_DHRR_STILL_MAX_G = "calorie_dhrr_still_max_g"
+        private const val KEY_DHRR_STILL_SMOOTHING_S = "calorie_dhrr_still_smoothing_s"
+        private const val KEY_DHRR_QUIET_STRETCH_MIN_LENGTH_S = "calorie_dhrr_quiet_stretch_min_length_s"
+        private const val KEY_DHRR_QUIET_STRETCH_MAX_RISE_BPM = "calorie_dhrr_quiet_stretch_max_rise_bpm"
+        private const val KEY_DHRR_QUIET_STRETCH_MIN_STILL_FRAC = "calorie_dhrr_quiet_stretch_min_still_frac"
+        private const val KEY_DHRR_QUIET_STRETCH_MIN_BEAT_FRAC = "calorie_dhrr_quiet_stretch_min_beat_frac"
+        private const val KEY_DHRR_BASAL_LOWER_WINDOW_S = "calorie_dhrr_basal_lower_window_s"
+        private const val KEY_DHRR_BASAL_LOWER_MIN_SAMPLES = "calorie_dhrr_basal_lower_min_samples"
+        private const val KEY_DHRR_BASAL_SEED_OFFSET_BPM = "calorie_dhrr_basal_seed_offset_bpm"
         private const val KEY_DHRR_RESERVE_RAMP_BAND_BPM = "calorie_dhrr_reserve_ramp_band_bpm"
-        private const val KEY_DHRR_MEASURED_BASAL_KCAL_DAY = "calorie_dhrr_measured_basal_kcal_day"
-        private const val KEY_DHRR_BASAL_FAT_NIGHT = "calorie_dhrr_basal_fat_night"
-        private const val KEY_DHRR_BASAL_FAT_DAY = "calorie_dhrr_basal_fat_day"
-        private const val KEY_DHRR_BASAL_FAT_DAY_START_HOUR = "calorie_dhrr_basal_fat_day_start_hour"
-        private const val KEY_DHRR_BASAL_FAT_DAY_END_HOUR = "calorie_dhrr_basal_fat_day_end_hour"
-        private const val KEY_DHRR_ACTIVE_FAT_AT_ZONE1 = "calorie_dhrr_active_fat_at_zone1"
-        private const val KEY_DHRR_ACTIVE_FAT_AT_ZONE2_TOP = "calorie_dhrr_active_fat_at_zone2_top"
+        private const val KEY_DHRR_RESTING_ENERGY_KCAL_PER_DAY = "calorie_dhrr_resting_energy_kcal_per_day"
+        private const val KEY_DHRR_RESTING_FAT_NIGHT_FRAC = "calorie_dhrr_resting_fat_night_frac"
+        private const val KEY_DHRR_RESTING_FAT_DAY_FRAC = "calorie_dhrr_resting_fat_day_frac"
+        private const val KEY_DHRR_RESTING_FAT_DAY_START_HOUR = "calorie_dhrr_resting_fat_day_start_hour"
+        private const val KEY_DHRR_RESTING_FAT_DAY_END_HOUR = "calorie_dhrr_resting_fat_day_end_hour"
+        private const val KEY_DHRR_ACTIVE_FAT_ZONE1_FRAC = "calorie_dhrr_active_fat_zone1_frac"
+        private const val KEY_DHRR_ACTIVE_FAT_ZONE2_TOP_FRAC = "calorie_dhrr_active_fat_zone2_top_frac"
+
+        /** Set once [migrateRenamedCalorieKeys] has run, so it costs one lookup on every store after. */
+        private const val KEY_DHRR_KEYS_MIGRATED = "calorie_dhrr_keys_migrated"
+
+        /**
+         * The name each measured-basal key was stored under before the rename, and the name it has now.
+         *
+         * Every entry is permanent. A device that skips the release carrying the rename still arrives
+         * with the old names stored, so there is no version after which this table can be dropped
+         * without losing those wearers' settings.
+         */
+        private val RENAMED_CALORIE_KEYS: Map<String, String> = linkedMapOf(
+            "calorie_dhrr_session_gap_s" to KEY_DHRR_WEAR_SESSION_MAX_SILENCE_S,
+            "calorie_dhrr_hampel_radius_s" to KEY_DHRR_SPIKE_WINDOW_RADIUS_S,
+            "calorie_dhrr_hampel_sigmas" to KEY_DHRR_SPIKE_THRESHOLD_SIGMAS,
+            "calorie_dhrr_suppress_peaks" to KEY_DHRR_PEAK_CLIP_ENABLED,
+            "calorie_dhrr_peak_block_s" to KEY_DHRR_PEAK_CLIP_BLOCK_S,
+            "calorie_dhrr_peak_percentile" to KEY_DHRR_PEAK_CLIP_KEPT_FRAC,
+            "calorie_dhrr_motion_still_g" to KEY_DHRR_STILL_MAX_G,
+            "calorie_dhrr_motion_smooth_s" to KEY_DHRR_STILL_SMOOTHING_S,
+            "calorie_dhrr_basal_min_window_s" to KEY_DHRR_QUIET_STRETCH_MIN_LENGTH_S,
+            "calorie_dhrr_basal_hr_range_bpm" to KEY_DHRR_QUIET_STRETCH_MAX_RISE_BPM,
+            "calorie_dhrr_basal_still_frac" to KEY_DHRR_QUIET_STRETCH_MIN_STILL_FRAC,
+            "calorie_dhrr_basal_beat_coverage_frac" to KEY_DHRR_QUIET_STRETCH_MIN_BEAT_FRAC,
+            "calorie_dhrr_rest_smooth_s" to KEY_DHRR_BASAL_LOWER_WINDOW_S,
+            "calorie_dhrr_rest_smooth_min_samples" to KEY_DHRR_BASAL_LOWER_MIN_SAMPLES,
+            "calorie_dhrr_basal_hr_seed_offset_bpm" to KEY_DHRR_BASAL_SEED_OFFSET_BPM,
+            "calorie_dhrr_measured_basal_kcal_day" to KEY_DHRR_RESTING_ENERGY_KCAL_PER_DAY,
+            "calorie_dhrr_basal_fat_night" to KEY_DHRR_RESTING_FAT_NIGHT_FRAC,
+            "calorie_dhrr_basal_fat_day" to KEY_DHRR_RESTING_FAT_DAY_FRAC,
+            "calorie_dhrr_basal_fat_day_start_hour" to KEY_DHRR_RESTING_FAT_DAY_START_HOUR,
+            "calorie_dhrr_basal_fat_day_end_hour" to KEY_DHRR_RESTING_FAT_DAY_END_HOUR,
+            "calorie_dhrr_active_fat_at_zone1" to KEY_DHRR_ACTIVE_FAT_ZONE1_FRAC,
+            "calorie_dhrr_active_fat_at_zone2_top" to KEY_DHRR_ACTIVE_FAT_ZONE2_TOP_FRAC,
+        )
 
         // The ranges live on the analytics types that own these values, so the getters above clamp to
         // exactly what the engines accept.

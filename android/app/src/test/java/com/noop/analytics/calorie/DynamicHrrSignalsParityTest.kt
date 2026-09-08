@@ -53,7 +53,7 @@ class DynamicHrrSignalsParityTest {
     }
 
     @Test
-    fun quietWindow_matchesAMinimumScannedAfreshAtEverySecond() {
+    fun quietWindow_matchesCandidatesScannedAfreshAtEverySecond() {
         val rng = Random(20_260_904)
         repeat(400) { case ->
             val shape = Shape.random(rng)
@@ -63,18 +63,18 @@ class DynamicHrrSignalsParityTest {
             val hrRangeBpm = rng.nextDouble(0.0, 12.0)
             val stillFrac = rng.nextDouble(0.0, 1.0)
             val beatFrac = rng.nextDouble(0.0, 1.0)
-            val repairGraceS = rng.nextInt(0, 60)
+            val minGracePeriod = rng.nextInt(0, 60)
 
             assertSameBits(
                 "case $case",
                 referenceQuietWindowMinHr(
                     shape.values, shape.sessions, still, beat, minWindowS, hrRangeBpm, stillFrac,
-                    beatFrac, repairGraceS,
+                    beatFrac, minGracePeriod,
                 ),
-                DynamicHrrSignals.quietWindowMinHr(
+                DynamicHrrSignals.quietWindows(
                     shape.values, shape.sessions, still, beat, minWindowS, hrRangeBpm, stillFrac,
-                    beatFrac, repairGraceS,
-                ),
+                    beatFrac, minGracePeriod,
+                ).lowestHrAtWindowEnd,
             )
         }
     }
@@ -159,6 +159,12 @@ class DynamicHrrSignalsParityTest {
         return out
     }
 
+    /**
+     * The quiet-window rule written the slow way: no prefix sums, and no map of live candidates.
+     *
+     * Every count is rescanned from the candidate's first second, and the rate it measured is
+     * rescanned too, so an error in the production prefix arithmetic cannot hide behind itself.
+     */
     private fun referenceQuietWindowMinHr(
         hr: DoubleArray,
         sessions: List<IntRange>,
@@ -168,46 +174,129 @@ class DynamicHrrSignalsParityTest {
         hrRangeBpm: Double,
         stillFrac: Double,
         beatFrac: Double,
-        repairGraceS: Int,
+        minGracePeriod: Int,
     ): DoubleArray {
         val out = DoubleArray(hr.size) { Double.NaN }
         for (session in sessions) {
-            var start = session.first
-            var lastLive = -1
-            var pausedSince = -1
-
-            fun close() {
-                if (lastLive >= 0 && lastLive - start + 1 >= minWindowS) {
-                    out[lastLive] = lowestOver(hr, start, lastLive)
+            val reports = referenceReportsOver(
+                session, hr, still, beat, minWindowS, hrRangeBpm, stillFrac, beatFrac, minGracePeriod,
+            )
+            for (report in reports) {
+                val beaten = reports.any { other ->
+                    other !== report &&
+                        report.start <= other.lastQualifyingSecond &&
+                        other.start <= report.lastQualifyingSecond &&
+                        (
+                            other.lowestHr < report.lowestHr ||
+                                (other.lowestHr == report.lowestHr && other.start > report.start)
+                            )
                 }
+                if (!beaten) out[report.lastQualifyingSecond] = report.lowestHr
             }
-
-            for (r in session) {
-                if (hr[r] - lowestOver(hr, start, r - 1) > hrRangeBpm) {
-                    close()
-                    start = r
-                    lastLive = -1
-                    pausedSince = -1
-                }
-                val span = r - start + 1
-                val stillShare = trueCount(still, start, r).toDouble() / span
-                val beatShare = trueCount(beat, start, r).toDouble() / span
-                if (stillShare >= stillFrac && beatShare >= beatFrac) {
-                    lastLive = r
-                    pausedSince = -1
-                } else {
-                    if (pausedSince < 0) pausedSince = r
-                    if (r - pausedSince + 1 > repairGraceS) {
-                        close()
-                        start = r + 1
-                        lastLive = -1
-                        pausedSince = -1
-                    }
-                }
-            }
-            close()
         }
         return out
+    }
+
+    /** What one reference candidate measured, and over which seconds. */
+    private class ReferenceReport(
+        val start: Int,
+        val lastQualifyingSecond: Int,
+        val lowestHr: Double,
+    )
+
+    private fun referenceReportsOver(
+        session: IntRange,
+        hr: DoubleArray,
+        still: BooleanArray,
+        beat: BooleanArray,
+        minWindowS: Int,
+        hrRangeBpm: Double,
+        stillFrac: Double,
+        beatFrac: Double,
+        minGracePeriod: Int,
+    ): List<ReferenceReport> {
+        val liveStarts = ArrayList<Int>()
+        val lastQualifying = HashMap<Int, Int>()
+        val pausedSince = HashMap<Int, Int>()
+        val reports = ArrayList<ReferenceReport>()
+
+        fun end(start: Int) {
+            val last = lastQualifying[start] ?: -1
+            if (last >= 0 && last - start + 1 >= minWindowS) {
+                reports += ReferenceReport(start, last, lowestOver(hr, start, last))
+            }
+            lastQualifying.remove(start)
+            pausedSince.remove(start)
+            liveStarts.remove(start)
+        }
+
+        for (second in session) {
+            // A stretch the rate has climbed too far above ends before this second joins it, so
+            // that its replacement can begin at this second.
+            for (start in liveStarts.toList()) {
+                if (hr[second] - lowestOver(hr, start, second - 1) > hrRangeBpm) end(start)
+            }
+            val afterBadSecond =
+                second > session.first && (!still[second - 1] || hr[second - 1].isNaN())
+            if (second == session.first || afterBadSecond || liveStarts.isEmpty()) {
+                if (second !in liveStarts) liveStarts += second
+            }
+            for (start in liveStarts.toList()) {
+                val spanSeconds = second - start + 1
+                val stillSeconds = trueCount(still, start, second)
+                val beatSeconds = trueCount(beat, start, second)
+                if (stillSeconds.toDouble() / spanSeconds >= stillFrac &&
+                    beatSeconds.toDouble() / spanSeconds >= beatFrac
+                ) {
+                    lastQualifying[start] = second
+                    pausedSince[start] = -1
+                    continue
+                }
+                if ((pausedSince[start] ?: -1) < 0) pausedSince[start] = second
+                val pausedForSeconds = second - pausedSince.getValue(start) + 1
+                val requiredRecoverySeconds = maxOf(
+                    (stillFrac * spanSeconds - stillSeconds) / (1 - stillFrac),
+                    (beatFrac * spanSeconds - beatSeconds) / (1 - beatFrac),
+                )
+                if (pausedForSeconds > minGracePeriod && requiredRecoverySeconds > spanSeconds) {
+                    end(start)
+                }
+            }
+            // A candidate one of the three kept before it dominates is dropped, reporting nothing:
+            // that one is more still, has itself reached minWindowS, and has read no higher a rate.
+            val kept = ArrayList<Int>()
+            for (start in liveStarts.toList()) {
+                if (kept.isEmpty()) {
+                    kept += start
+                    continue
+                }
+                val stillFraction =
+                    trueCount(still, start, second).toDouble() / (second - start + 1)
+                val lowest = lowestOver(hr, start, second)
+                var dominated = false
+                var back = kept.size - 1
+                while (back >= maxOf(0, kept.size - 3) && !dominated) {
+                    val earlier = kept[back]
+                    val earlierLastQualifying = lastQualifying[earlier] ?: -1
+                    val earlierStillFraction =
+                        trueCount(still, earlier, second).toDouble() / (second - earlier + 1)
+                    dominated = earlierStillFraction > stillFraction &&
+                        earlierLastQualifying >= 0 &&
+                        earlierLastQualifying - earlier + 1 >= minWindowS &&
+                        lowestOver(hr, earlier, second) <= lowest
+                    back -= 1
+                }
+                if (dominated) {
+                    lastQualifying.remove(start)
+                    pausedSince.remove(start)
+                    liveStarts.remove(start)
+                } else {
+                    kept += start
+                }
+            }
+        }
+        for (start in liveStarts.toList()) end(start)
+        return reports
     }
 
     /** The lowest reading of `[from, to]`, or NaN where it carries none. */

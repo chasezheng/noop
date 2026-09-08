@@ -64,7 +64,7 @@ class DynamicHrrFuelTest {
 
     // ── The resting fuel mix through the day ──────────────────────────────────────────────────
 
-    private val basal = BasalFatCurve(DynamicHrrModelSetting())
+    private val basal = RestingFatCurve(DynamicHrrModelSetting())
 
     /** The brain's glucose is removed from every resting share, so a plateau reads at 80% of itself. */
     private val awake = 0.8
@@ -86,7 +86,7 @@ class DynamicHrrFuelTest {
         // The ramp is an hour long and the overnight plateau anchors at 02:00, so a start hour under
         // 03:00 is held there. Read at 02:30, halfway up the ramp the clamp put there: unclamped the
         // anchors run backwards and 02:30 lands past the whole ramp on the daytime share instead.
-        val early = BasalFatCurve(DynamicHrrModelSetting(basalFatDayStartHour = 0.0))
+        val early = RestingFatCurve(DynamicHrrModelSetting(restingFatDayStartHour = 0.0))
 
         assertEquals(0.55 * awake, early.fractionAt(2.5), 1e-12)
     }
@@ -114,8 +114,8 @@ class DynamicHrrFuelTest {
         // to the start, collapsing the window to a point and starting the climb back to the overnight
         // share there. Read at 22:00, on that climb: left uncollapsed the climb starts nine hours
         // earlier and is far further along by then.
-        val collapsed = BasalFatCurve(
-            DynamicHrrModelSetting(basalFatDayStartHour = 20.0, basalFatDayEndHour = 9.0),
+        val collapsed = RestingFatCurve(
+            DynamicHrrModelSetting(restingFatDayStartHour = 20.0, restingFatDayEndHour = 9.0),
         )
 
         assertEquals((0.30 + 0.50 * 2.0 / 6.0) * awake, collapsed.fractionAt(22.0), 1e-12)
@@ -158,7 +158,7 @@ class DynamicHrrFuelTest {
         // range inside the curve, so the answer is clamped rather than left above one.
         val impossible = ActiveFatCurve(
             HrZones.zones(maxHR = 180.0),
-            DynamicHrrModelSetting(activeFatAtZone1 = 5.0),
+            DynamicHrrModelSetting(activeFatZone1Frac = 5.0),
         )
 
         assertEquals(1.0, impossible.fractionAt(90.0), 1e-12)

@@ -108,30 +108,30 @@ class BackupSourceTest {
         BackupSource.open(file).use { source ->
             val measured = source.profile.dynamicHrrModelSetting
             assertEquals(listOf(88.0, 110.0, 132.0, 154.0, 176.0), source.profile.hrZoneThresholds)
-            assertEquals(900, measured.sessionGapS)
+            assertEquals(900, measured.wearSessionMaxSilenceS)
             assertEquals(0.6, measured.minHrCoverageFrac, 0.0)
-            assertEquals(7, measured.hampelRadiusS)
-            assertEquals(2.5, measured.hampelSigmas, 0.0)
-            assertEquals(false, measured.suppressPeaks)
-            assertEquals(240, measured.peakBlockS)
-            assertEquals(0.93, measured.peakPercentile, 0.0)
-            assertEquals(0.015, measured.motionStillG, 0.0)
-            assertEquals(12, measured.motionSmoothS)
-            assertEquals(420, measured.basalMinWindowS)
-            assertEquals(8.0, measured.basalHrRangeBpm, 0.0)
-            assertEquals(0.95, measured.basalStillFrac, 0.0)
-            assertEquals(0.4, measured.basalBeatCoverageFrac, 0.0)
-            assertEquals(45, measured.restSmoothS)
-            assertEquals(25, measured.restSmoothMinSamples)
-            assertEquals(4.0, measured.basalHrSeedOffsetBpm, 0.0)
+            assertEquals(7, measured.spikeWindowRadiusS)
+            assertEquals(2.5, measured.spikeThresholdSigmas, 0.0)
+            assertEquals(false, measured.peakClipEnabled)
+            assertEquals(240, measured.peakClipBlockS)
+            assertEquals(0.93, measured.peakClipKeptFrac, 0.0)
+            assertEquals(0.015, measured.stillMaxG, 0.0)
+            assertEquals(12, measured.stillSmoothingS)
+            assertEquals(420, measured.quietStretchMinLengthS)
+            assertEquals(8.0, measured.quietStretchMaxRiseBpm, 0.0)
+            assertEquals(0.95, measured.quietStretchMinStillFrac, 0.0)
+            assertEquals(0.4, measured.quietStretchMinBeatFrac, 0.0)
+            assertEquals(45, measured.basalLowerWindowS)
+            assertEquals(25, measured.basalLowerMinSamples)
+            assertEquals(4.0, measured.basalSeedOffsetBpm, 0.0)
             assertEquals(12.0, measured.reserveRampBandBpm, 0.0)
-            assertEquals(1577.0, measured.measuredBasalKcalDay, 0.0)
-            assertEquals(0.75, measured.basalFatNight, 0.0)
-            assertEquals(0.35, measured.basalFatDay, 0.0)
-            assertEquals(9.0, measured.basalFatDayStartHour, 0.0)
-            assertEquals(21.0, measured.basalFatDayEndHour, 0.0)
-            assertEquals(0.95, measured.activeFatAtZone1, 0.0)
-            assertEquals(0.6, measured.activeFatAtZone2Top, 0.0)
+            assertEquals(1577.0, measured.restingEnergyKcalPerDay, 0.0)
+            assertEquals(0.75, measured.restingFatNightFrac, 0.0)
+            assertEquals(0.35, measured.restingFatDayFrac, 0.0)
+            assertEquals(9.0, measured.restingFatDayStartHour, 0.0)
+            assertEquals(21.0, measured.restingFatDayEndHour, 0.0)
+            assertEquals(0.95, measured.activeFatZone1Frac, 0.0)
+            assertEquals(0.6, measured.activeFatZone2TopFrac, 0.0)
         }
     }
 
@@ -142,8 +142,8 @@ class BackupSourceTest {
             settings = """{"calorie.basalStillFrac": 4.0, "calorie.hampelRadiusS": 9000}""",
         )
         BackupSource.open(file).use { source ->
-            assertEquals(1.0, source.profile.dynamicHrrModelSetting.basalStillFrac, 0.0)
-            assertEquals(30, source.profile.dynamicHrrModelSetting.hampelRadiusS)
+            assertEquals(1.0, source.profile.dynamicHrrModelSetting.quietStretchMinStillFrac, 0.0)
+            assertEquals(30, source.profile.dynamicHrrModelSetting.spikeWindowRadiusS)
         }
     }
 

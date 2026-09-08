@@ -107,9 +107,9 @@ class Vo2MaxInputTest {
     @Test
     fun toUserProfile_carriesTheMeasuredBasalSettings() {
         val store = ProfileStore(FakeSharedPreferences())
-        store.calorieDhrrBasalHrSeedOffsetBpm = 7.0
+        store.calorieDhrrBasalSeedOffsetBpm = 7.0
         assertEquals(store.toDynamicHrrModelSetting(), store.toUserProfile().dynamicHrrModelSetting)
-        assertEquals(7.0, store.toUserProfile().dynamicHrrModelSetting.basalHrSeedOffsetBpm, 1e-12)
+        assertEquals(7.0, store.toUserProfile().dynamicHrrModelSetting.basalSeedOffsetBpm, 1e-12)
     }
 
     @Test
