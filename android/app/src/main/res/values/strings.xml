@@ -2926,7 +2926,7 @@
     <string name="total_energy_table_speed">Equiv speed</string>
     <string name="total_energy_compare_a11y">Active energy per minute, peak %1$s kcal</string>
     <string name="total_energy_footnote">Resting energy is not stored — it is re-derived from your profile and covers the whole 24 hours, not only the part of the day that has elapsed. The model, the heart-rate floors and the motion sensitivity all live in Settings → Calorie tracking.</string>
-    <string name="total_energy_speed_footnote">Equivalent speed is the level walking pace that costs the same energy above resting. The equation behind it holds from about 3 to 6.4 km/h; outside that band it is the same line extended. A span too quiet to walk at all reads as a dash.</string>
+    <string name="total_energy_speed_footnote">Equivalent speed is the level-ground speed of the same energy cost as this span. Below 7.5 km/h it is a running speed, and above 7.5 km/h a walking speed; in both cases it is the slower of the two. The energy costs were measured on a small group of trained runners, so the value is approximate. A span with too little energy shows a dash.</string>
     <string name="total_energy_empty_imported">Your phone reported %1$s of active energy for this day. NOOP has no heart-rate or motion data for it, so there is nothing here to break down.</string>
     <string name="total_energy_imported_wins">Your phone reported %1$s of active energy for this day, and that is what the Today calorie tile is using. The numbers here are NOOP’s own. Settings → Calorie tracking decides which one the tile shows.</string>
     <string name="settings_vo2max_label">VO₂max (optional)</string>

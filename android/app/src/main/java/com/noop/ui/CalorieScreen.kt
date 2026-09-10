@@ -33,6 +33,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.noop.R
 import com.noop.analytics.calorie.CalorieTimeline
+import com.noop.analytics.calorie.RunningPaceEstimator
+import com.noop.analytics.calorie.WalkingPaceEstimator
 import com.noop.analytics.calorie.exclusiveEnd
 import java.time.Instant
 import java.time.LocalDate
@@ -204,6 +206,14 @@ private fun ScoredDay(
     val activePerMinute = remember(timeline) {
         timeline.tsIndex.mapIndexed { i, ts -> ts to timeline.activeKcal[i] }
     }
+    // The equivalent-pace curves give gross cost, so they need resting energy as a rate.
+    val restingKcalPerS = scored.restingKcal24h / 86_400.0
+    val walking = remember(profile.weightKg, restingKcalPerS) {
+        WalkingPaceEstimator(profile.weightKg, restingKcalPerS)
+    }
+    val running = remember(profile.weightKg, restingKcalPerS) {
+        RunningPaceEstimator(profile.weightKg, restingKcalPerS)
+    }
 
     HeroSection(
         modelName = uiString(modelNameRes(scored.model)),
@@ -224,10 +234,10 @@ private fun ScoredDay(
     DayTraceCard(plots, chart, zone)
     ActiveEnergyCard(
         activePerMinute, plots, trace.hrTrace, chart, scored.wakeTs, zone,
-        profile.weightKg, unitSystem,
+        walking, running, unitSystem,
     )
     BreakdownCard(timeline, scored.restingKcal24h)
-    WorkoutsCard(scored.workouts, activePerMinute, zone, profile.weightKg, unitSystem)
+    WorkoutsCard(scored.workouts, activePerMinute, zone, walking, running, unitSystem)
     Text(
         uiString(R.string.total_energy_footnote),
         style = NoopType.footnote,
@@ -384,7 +394,8 @@ private fun ActiveEnergyCard(
     chart: CalorieChartState,
     wakeTs: Long?,
     zone: ZoneId,
-    weightKg: Double,
+    walking: WalkingPaceEstimator,
+    running: RunningPaceEstimator,
     unitSystem: UnitSystem,
 ) {
     val buckets = remember(activePerMinute, plots, wakeTs, zone) {
@@ -414,7 +425,7 @@ private fun ActiveEnergyCard(
                 formatAxis = ::numberString,
             )
             CalorieTimeAxis(chart, zone)
-            HalfHourTable(buckets, plots, zone, weightKg, unitSystem)
+            HalfHourTable(buckets, plots, zone, walking, running, unitSystem)
         }
     }
 }
@@ -425,7 +436,8 @@ private fun HalfHourTable(
     buckets: List<CalorieBucket>,
     plots: List<PlotSpec>,
     zone: ZoneId,
-    weightKg: Double,
+    walking: WalkingPaceEstimator,
+    running: RunningPaceEstimator,
     unitSystem: UnitSystem,
 ) {
     if (buckets.isEmpty()) return
@@ -453,7 +465,7 @@ private fun HalfHourTable(
                     // The row spans the whole half hour whether or not every minute of it was
                     // recorded, so the pace is what the wearer averaged across it.
                     UnitFormatter.paceFromSecPerKm(
-                        walkEquivalentSecPerKm(bucket.kcal, HALF_HOUR_S.toDouble(), weightKg),
+                        equivalentPaceSecPerKm(walking, running, bucket.kcal, HALF_HOUR_S.toDouble()),
                         unitSystem,
                     ),
                     TABLE_SPEED_WIDTH,
@@ -544,7 +556,8 @@ private fun WorkoutsCard(
     workouts: List<LongRange>,
     activePerMinute: List<CaloriePoint>,
     zone: ZoneId,
-    weightKg: Double,
+    walking: WalkingPaceEstimator,
+    running: RunningPaceEstimator,
     unitSystem: UnitSystem,
 ) {
     NoopCard {
@@ -567,10 +580,11 @@ private fun WorkoutsCard(
                     kcalString(kcal),
                     Palette.effortColor,
                     detail = UnitFormatter.paceFromSecPerKm(
-                        walkEquivalentSecPerKm(
+                        equivalentPaceSecPerKm(
+                            walking,
+                            running,
                             kcal,
                             (window.exclusiveEnd - window.first).toDouble(),
-                            weightKg,
                         ),
                         unitSystem,
                     ),

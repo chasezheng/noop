@@ -2755,7 +2755,7 @@
     <string name="total_energy_table_speed">等效配速</string>
     <string name="total_energy_compare_a11y">每分钟活动能量，峰值 %1$s 千卡</string>
     <string name="total_energy_footnote">静息能量不会被存储，而是根据你的个人资料重新推算，并覆盖完整的 24 小时，而非仅当天已过去的时间。模型、心率门槛和动作灵敏度都在“设置 → 卡路里记录”中。</string>
-    <string name="total_energy_speed_footnote">等效配速是指在平地上以相同的静息以上能量消耗行走时的速度。所依据的方程适用于约 3 至 6.4 公里/小时；超出该范围只是同一条直线的延长。消耗过低、无法对应任何步行的时段显示为破折号。</string>
+    <string name="total_energy_speed_footnote">等效速度是在平地上与该时段能量消耗相同的速度。低于 7.5 公里/小时时为跑步速度，高于 7.5 公里/小时时为步行速度；两种情况下都取两者中较慢的一个。能量消耗是在一小组训练有素的跑者身上测得的，因此该值只是近似值。消耗过低的时段显示为破折号。</string>
     <string name="total_energy_empty_imported">手机为这一天上报了 %1$s 的活动能量。NOOP 没有这一天的心率或运动数据，因此这里没有可拆解的内容。</string>
     <string name="total_energy_imported_wins">手机为这一天上报了 %1$s 的活动能量，“今天”的卡路里磁贴正在使用该数值。此处的数字来自 NOOP 自己的模型。磁贴显示哪一个，由“设置 → 卡路里追踪”决定。</string>
     <string name="settings_vo2max_label">最大摄氧量（可选）</string>

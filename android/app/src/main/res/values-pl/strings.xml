@@ -2846,7 +2846,7 @@
     <string name="total_energy_table_speed">Tempo równow.</string>
     <string name="total_energy_compare_a11y">Energia aktywna na minutę, szczyt %1$s kcal</string>
     <string name="total_energy_footnote">Energia spoczynkowa nie jest zapisywana — jest przeliczana z Twojego profilu i obejmuje pełne 24 godziny, a nie tylko miniętą część dnia. Model, progi tętna i czułość ruchu znajdziesz w Ustawienia → Śledzenie kalorii.</string>
-    <string name="total_energy_speed_footnote">Tempo równoważne to tempo marszu po płaskim terenie, które kosztuje tyle samo energii powyżej spoczynku. Równanie, na którym się opiera, obowiązuje od około 3 do 6,4 km/h; poza tym zakresem to ta sama przedłużona prosta. Odcinek o zbyt małym wydatku, by w ogóle iść, pokazuje myślnik.</string>
+    <string name="total_energy_speed_footnote">Prędkość równoważna to prędkość na płaskim terenie o takim samym koszcie energetycznym jak ten odcinek. Poniżej 7,5 km/h jest to prędkość biegu, a powyżej 7,5 km/h prędkość marszu; w obu przypadkach jest to niższa z dwóch wartości. Koszty energetyczne zmierzono w małej grupie wytrenowanych biegaczy, więc wartość jest przybliżona. Odcinek o zbyt małym wydatku pokazuje myślnik.</string>
     <string name="total_energy_empty_imported">Telefon zgłosił dla tego dnia %1$s energii aktywnej. NOOP nie ma dla niego danych tętna ani ruchu, więc nie ma tu czego rozbić na części.</string>
     <string name="total_energy_imported_wins">Telefon zgłosił dla tego dnia %1$s energii aktywnej i to jej używa kafelek kalorii w widoku Dzisiaj. Liczby tutaj są własne NOOP. To, którą wartość pokazuje kafelek, ustala się w Ustawieniach → Śledzenie kalorii.</string>
     <string name="settings_vo2max_label">VO₂max (opcjonalnie)</string>

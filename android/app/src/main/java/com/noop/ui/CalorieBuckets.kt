@@ -1,5 +1,8 @@
 package com.noop.ui
 
+import com.noop.analytics.calorie.PaceConstants
+import com.noop.analytics.calorie.RunningPaceEstimator
+import com.noop.analytics.calorie.WalkingPaceEstimator
 import java.time.Instant
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
@@ -89,34 +92,32 @@ internal fun calorieBuckets(
     return out
 }
 
-// MARK: - The walk that costs the same
+// MARK: - The pace that costs the same
 
 /**
- * Net oxygen cost of level walking, in ml·kg⁻¹·min⁻¹ per metre per minute.
+ * The pace to display for a span, in seconds per kilometre, or null if no pace is displayed.
  *
- * The speed term of the ACSM walking equation. Its 3.5 ml·kg⁻¹·min⁻¹ resting term is left out: the
- * energy converted below is already energy above resting.
+ * The gait is walking at and above [PaceConstants.CROSSOVER_KM_PER_HOUR] and running below it. That is
+ * the slower of the two speeds on each side of that speed, so the value never claims the faster gait.
+ * It is not the gait a person would choose: above the crossover running costs less per kilometre, so a
+ * person runs.
+ *
+ * The walking speed selects the gait. Both speeds reach the crossover at almost the same energy,
+ * because both costs are almost equal there, so the running speed would select the same gait; the
+ * displayed pace steps by 0.02 s/km at the switch.
+ *
+ * Null below [PaceConstants.SLOWEST_KM_PER_HOUR]: a span that earned that little was not travelling
+ * slowly, and naming a pace for it would say that it was.
  */
-private const val WALK_VO2_PER_M_PER_MIN = 0.1
-
-/** kcal released per litre of oxygen, the constant the ACSM equation is stated against. */
-private const val WALK_KCAL_PER_LITRE_O2 = 5.0
-
-/** The slowest pace reported, 2 km/h in metres per minute. */
-private const val WALK_SLOWEST_M_PER_MIN = 100.0 / 3.0
-
-/**
- * The level walking speed that costs [kcal] above resting over [spanS], in seconds per kilometre.
- *
- * Null below [WALK_SLOWEST_M_PER_MIN], which is slower than anyone walks: a span that earned that
- * little was not walking slowly, and naming a pace for it would say that it was.
- *
- * The equation this comes from is validated from about 3 to 6.4 km/h. Outside that band it is the
- * same straight line extended rather than a measured cost.
- */
-internal fun walkEquivalentSecPerKm(kcal: Double, spanS: Double, weightKg: Double): Double? {
-    if (kcal <= 0.0 || spanS <= 0.0 || weightKg <= 0.0) return null
-    val litresO2PerMin = kcal / WALK_KCAL_PER_LITRE_O2 / (spanS / 60.0)
-    val metresPerMin = litresO2PerMin * 1_000.0 / weightKg / WALK_VO2_PER_M_PER_MIN
-    return if (metresPerMin < WALK_SLOWEST_M_PER_MIN) null else 60_000.0 / metresPerMin
+internal fun equivalentPaceSecPerKm(
+    walking: WalkingPaceEstimator,
+    running: RunningPaceEstimator,
+    activeKcal: Double,
+    spanS: Double,
+): Double? {
+    val walkingKmPerHour = walking.kmPerHourFor(activeKcal, spanS) ?: return null
+    val kmPerHour =
+        if (walkingKmPerHour >= PaceConstants.CROSSOVER_KM_PER_HOUR) walkingKmPerHour
+        else running.kmPerHourFor(activeKcal, spanS) ?: return null
+    return if (kmPerHour < PaceConstants.SLOWEST_KM_PER_HOUR) null else 3_600.0 / kmPerHour
 }
