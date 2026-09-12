@@ -504,9 +504,12 @@ data class DynamicHrrModelSetting(
     /**
      * The length of the block one clipping ceiling is computed over.
      *
-     * A block whose last seconds are still climbing or falling is extended past this length, so it
-     * does not end inside one rise. Longer blocks weigh a reading against more of the day, so a
-     * single hard effort is less likely to set its own ceiling.
+     * A block whose last seconds are still climbing or falling, or still stand above the block's own
+     * ninetieth percentile, is extended past this length, so that it does not end inside one rise or
+     * inside a stretch that is high throughout. A block that this carries to ten minutes and that is
+     * still high there is left unclipped, since ten minutes of high readings are one effort rather
+     * than an artifact. Longer blocks weigh a reading against more of the day, so a single hard
+     * effort is less likely to set its own ceiling.
      */
     val peakClipBlockS: Int = 300,
 

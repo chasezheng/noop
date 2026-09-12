@@ -216,8 +216,7 @@ class DynamicHrrSignalsTest {
      *
      * Second 135 says where the first block ended. A first block that stops on the grid at 119
      * leaves that reading in a block of mostly 150, whose ninetieth percentile is 150 and which
-     * therefore keeps it at 150. A first block that runs to 139 ranks it against a hundred seconds
-     * of 60 instead, whose ninetieth percentile is 79.
+     * therefore keeps it at 150. A block that reached past 139 would rank it lower.
      */
     private fun blockEndValues(edge: (Int) -> Double): DoubleArray = DoubleArray(240) { i ->
         when {
@@ -239,31 +238,93 @@ class DynamicHrrSignalsTest {
         assertEquals(150.0, out[135], 0.0)
     }
 
+    /**
+     * A 200 bpm plateau, a fall of one bpm a second from second 100 to 139, then 60 bpm, with one
+     * 300 bpm reading at second 130.
+     *
+     * The fall carries the first block's end past the grid boundary at 119. The 300 is then ranked
+     * against a hundred seconds of 200 and keeps 200. A first block that stopped on the grid would
+     * leave it in a block of mostly 60, whose ninetieth percentile is 167.
+     *
+     * The seconds at the end of this block are the lowest in it, so only the rise-or-fall test can
+     * extend it. The level test cannot.
+     */
+    private fun fallingEdgeValues(): DoubleArray = DoubleArray(240) { i ->
+        when {
+            i == 130 -> 300.0
+            i < 100 -> 200.0
+            i < 140 -> 200.0 - (i - 99)
+            else -> 60.0
+        }
+    }
+
+    /**
+     * 60 bpm to second 109, then 79 bpm, with one 300 bpm reading at second 125.
+     *
+     * The step is exactly twice the mean absolute deviation of the twenty seconds around it, so the
+     * rise-or-fall test does not extend the first block. The mean of the last five seconds is 79
+     * against a ninetieth percentile of 60, so the level test does.
+     *
+     * Second 110 says whether the end moved. A block that stops on the grid at 119 holds a hundred
+     * and ten seconds of 60 against ten of 79, and its ninetieth percentile of 60 pulls that second
+     * down to 60. A block that reached past 119 holds enough 79s for its ninetieth percentile to be
+     * 79, which leaves it alone.
+     */
+    private fun highEdgeValues(): DoubleArray = DoubleArray(240) { i ->
+        when {
+            i == 125 -> 300.0
+            i < 110 -> 60.0
+            else -> 79.0
+        }
+    }
+
     @Test
-    fun clipBlockPeaks_movesABlockEndPastSecondsThatAreStillClimbing() {
-        // Seconds 100..119 climb one bpm a second, which carries the end to 139. There the twenty
-        // seconds behind it are the flat plateau, which moves nowhere as a whole, and it stops.
-        val values = blockEndValues { if (it < 100) 60.0 else 60.0 + (it - 100) }
+    fun clipBlockPeaks_movesABlockEndPastSecondsThatAreStillFalling() {
+        val values = fallingEdgeValues()
 
         val out = DynamicHrrSignals.clipBlockPeaks(
             values, listOf(0..239), windowStartUtc = 0L, blockS = 120, percentile = 0.90,
         )
 
-        assertEquals(79.0, out[135], 0.0)
+        assertEquals(200.0, out[130], 0.0)
     }
 
     @Test
-    fun clipBlockPeaks_leavesABlockEndAloneWhenTheSecondsBeforeItHaveAHole() {
-        // The same climb, with second 110 unread. What happened across an unread second is not
-        // known, so the end stays on the grid.
-        val values = blockEndValues { if (it < 100) 60.0 else 60.0 + (it - 100) }
+    fun clipBlockPeaks_movesABlockEndPastSecondsThatStandAboveTheBlock() {
+        val values = highEdgeValues()
+
+        val out = DynamicHrrSignals.clipBlockPeaks(
+            values, listOf(0..239), windowStartUtc = 0L, blockS = 120, percentile = 0.90,
+        )
+
+        assertEquals(79.0, out[110], 0.0)
+    }
+
+    @Test
+    fun clipBlockPeaks_leavesABlockEndAloneWhenTheFallingSecondsHaveAHole() {
+        // The same fall, with second 110 unread. What happened across an unread second is not known,
+        // so the end stays on the grid.
+        val values = fallingEdgeValues()
         values[110] = Double.NaN
 
         val out = DynamicHrrSignals.clipBlockPeaks(
             values, listOf(0..239), windowStartUtc = 0L, blockS = 120, percentile = 0.90,
         )
 
-        assertEquals(150.0, out[135], 0.0)
+        assertEquals(167.0, out[130], 0.0)
+    }
+
+    @Test
+    fun clipBlockPeaks_leavesABlockEndAloneWhenTheHighSecondsHaveAHole() {
+        // The same step, with second 118 unread, which is one of the five the level test reads.
+        val values = highEdgeValues()
+        values[118] = Double.NaN
+
+        val out = DynamicHrrSignals.clipBlockPeaks(
+            values, listOf(0..239), windowStartUtc = 0L, blockS = 120, percentile = 0.90,
+        )
+
+        assertEquals(60.0, out[110], 0.0)
     }
 
     @Test
@@ -280,19 +341,33 @@ class DynamicHrrSignalsTest {
     }
 
     @Test
-    fun clipBlockPeaks_extendsABlockNoFurtherThanTenMinutes() {
-        // One bpm a second for fifteen minutes: the seconds behind the end never settle, so nothing
-        // but the ten-minute limit stops it. The first block is 0..599 and the ninetieth percentile
-        // of its 600 readings is the one at second 539, 599, so second 599 is pulled from 659 down
-        // to it. A block that had run on to the end of the session would have left it at 659.
+    fun clipBlockPeaks_leavesABlockExtendedToTenMinutesAtAHighLevelUnclipped() {
+        // One bpm a second for fifteen minutes: the seconds behind the end never settle, so
+        // extension runs from the grid boundary at 299 to the ten-minute limit at 599. The mean of
+        // the last five seconds is 657 against the block's ninetieth percentile of 599, so the block
+        // is ten minutes of one climb and nothing in it is pulled down.
         val values = DoubleArray(900) { 60.0 + it }
 
         val out = DynamicHrrSignals.clipBlockPeaks(
             values, listOf(0..899), windowStartUtc = 0L, blockS = 300, percentile = 0.90,
         )
 
-        assertEquals(599.0, out[599], 0.0)
+        assertEquals(659.0, out[599], 0.0)
+        // The block after it is the grid's own 600..899, which is clipped as usual.
         assertEquals(929.0, out[899], 0.0)
+    }
+
+    @Test
+    fun clipBlockPeaks_clipsABlockTheGridAloneMadeTenMinutesLong() {
+        // The same climb over ten-minute blocks. Nothing was extended, so nothing was measured to be
+        // high, and the ninetieth percentile of 0..599 pulls second 599 from 659 down to 599.
+        val values = DoubleArray(1_200) { 60.0 + it }
+
+        val out = DynamicHrrSignals.clipBlockPeaks(
+            values, listOf(0..1_199), windowStartUtc = 0L, blockS = 600, percentile = 0.90,
+        )
+
+        assertEquals(599.0, out[599], 0.0)
     }
 
     @Test

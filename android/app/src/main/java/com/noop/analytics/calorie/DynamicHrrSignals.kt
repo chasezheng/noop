@@ -25,6 +25,12 @@ internal object DynamicHrrSignals {
     /** The longest a block may be extended to. A block already this long is not extended. */
     private const val PEAK_MAX_BLOCK_S = 600
 
+    /** How many seconds at a block's end decide whether that end sits at a high level. */
+    private const val PEAK_LEVEL_PROBE_S = 5
+
+    /** The share of a block's readings that the seconds at its end must stand above to be high. */
+    private const val PEAK_LEVEL_FRAC = 0.90
+
     /**
      * [values] with each local outlier replaced by its local median (a Hampel filter).
      *
@@ -63,14 +69,23 @@ internal object DynamicHrrSignals {
      * when the wearer put the strap on. Nothing outside a block is read or written, so a burst at
      * one block's edge cannot flatten the next.
      *
-     * That end is then extended [PEAK_EDGE_STEP_S] seconds at a time while the block's last
-     * [PEAK_EDGE_PROBE_S] seconds are still climbing or falling as a whole, which they are when
-     * their net change stands above twice their mean absolute deviation. An end that lands inside
-     * one rise or fall would otherwise rank its two halves against different neighbours. Extending
-     * stops at a second that carries no reading, at the end of the session, and at a block of
-     * [PEAK_MAX_BLOCK_S] seconds. A block shorter than [PEAK_EDGE_MIN_BLOCK_S] seconds is not
+     * That end is then extended [PEAK_EDGE_STEP_S] seconds at a time while either of two tests
+     * passes. The first is that the block's last [PEAK_EDGE_PROBE_S] seconds are still climbing or
+     * falling as a whole, which they are when their net change stands above twice their mean absolute
+     * deviation; an end that lands inside one rise or fall would otherwise rank its two halves
+     * against different neighbours. The second is that the mean of the block's last
+     * [PEAK_LEVEL_PROBE_S] seconds stands above the reading at [PEAK_LEVEL_FRAC] of the block so far,
+     * recomputed at each step, so that an end does not land inside a stretch that is high throughout.
+     * Extending stops at a second that carries no reading, at the end of the session, and at a block
+     * of [PEAK_MAX_BLOCK_S] seconds. A block shorter than [PEAK_EDGE_MIN_BLOCK_S] seconds is not
      * extended at all, and the block after one that was starts after its extended end rather than
      * on the boundary.
+     *
+     * No reading is lowered at all in a block that extension carried to [PEAK_MAX_BLOCK_S] seconds
+     * and that is still above [PEAK_LEVEL_FRAC] of itself there. Such a block is one sustained effort
+     * rather than a short burst inside a quieter block, and a ceiling taken from its own readings
+     * would lower that effort. A block the grid alone made that long is clipped as usual, because
+     * nothing about it was measured to be high.
      *
      * The percentile is the nearest rank: the block's readings sorted ascending, and the one at
      * `ceil(percentile x count) - 1`. Nearest rank rather than an interpolated one because the same
@@ -96,8 +111,10 @@ internal object DynamicHrrSignals {
                 val blockLast = (Math.floorDiv(windowStartUtc + blockStart, blockS.toLong()) + 1L) *
                     blockS - windowStartUtc - 1L
                 val gridEnd = minOf(session.last.toLong(), blockLast).toInt()
-                val blockEnd = extendedBlockEnd(values, blockStart, gridEnd, session.last)
-                clipBlock(values, out, blockStart..blockEnd, percentile, scratch)
+                val blockEnd = extendedBlockEnd(values, blockStart, gridEnd, session.last, scratch)
+                if (!blockIsSustainedHigh(values, blockStart, blockEnd, gridEnd, scratch)) {
+                    clipBlock(values, out, blockStart..blockEnd, percentile, scratch)
+                }
                 blockStart = blockEnd + 1
             }
         }
@@ -363,36 +380,72 @@ internal object DynamicHrrSignals {
         percentile: Double,
         scratch: DoubleArray,
     ) {
-        var count = 0
-        for (i in block) {
-            if (values[i].isNaN()) continue
-            scratch[count++] = values[i]
-        }
-        if (count == 0) return
-        scratch.sort(0, count)
-        // Rank counts from one, the array from zero.
-        val rank = Math.ceil(percentile * count).toInt().coerceIn(1, count)
-        val ceiling = scratch[rank - 1]
+        val ceiling = rankedReading(values, block, percentile, scratch)
+        if (ceiling.isNaN()) return
         for (i in block) {
             if (!values[i].isNaN() && values[i] > ceiling) out[i] = ceiling
         }
     }
 
     /**
-     * [gridEnd] extended while the seconds ending at it are still on one course, never past
-     * [sessionLast] and never to a block longer than [PEAK_MAX_BLOCK_S]. See [clipBlockPeaks].
+     * The reading at [percentile] of [block] by nearest rank, or [Double.NaN] where it holds none.
+     *
+     * Nearest rank rather than an interpolated one because the same arithmetic has to hold on another
+     * platform, and an integer index cannot disagree about its last bits.
+     */
+    private fun rankedReading(
+        values: DoubleArray,
+        block: IntRange,
+        percentile: Double,
+        scratch: DoubleArray,
+    ): Double {
+        var count = 0
+        for (i in block) {
+            if (values[i].isNaN()) continue
+            scratch[count++] = values[i]
+        }
+        if (count == 0) return Double.NaN
+        scratch.sort(0, count)
+        // Rank counts from one, the array from zero.
+        val rank = Math.ceil(percentile * count).toInt().coerceIn(1, count)
+        return scratch[rank - 1]
+    }
+
+    /**
+     * Whether extension carried [blockStart]..[blockEnd] to [PEAK_MAX_BLOCK_S] seconds and its end is
+     * still above [PEAK_LEVEL_FRAC] of it. See [clipBlockPeaks].
+     */
+    private fun blockIsSustainedHigh(
+        values: DoubleArray,
+        blockStart: Int,
+        blockEnd: Int,
+        gridEnd: Int,
+        scratch: DoubleArray,
+    ): Boolean =
+        blockEnd > gridEnd &&
+            blockEnd - blockStart + 1 >= PEAK_MAX_BLOCK_S &&
+            edgeIsAboveBlockPercentile(values, blockStart, blockEnd, scratch)
+
+    /**
+     * [gridEnd] extended while the seconds ending at it are still on one course or still above
+     * [PEAK_LEVEL_FRAC] of the block, never past [sessionLast] and never to a block longer than
+     * [PEAK_MAX_BLOCK_S]. See [clipBlockPeaks].
      */
     private fun extendedBlockEnd(
         values: DoubleArray,
         blockStart: Int,
         gridEnd: Int,
         sessionLast: Int,
+        scratch: DoubleArray,
     ): Int {
         if (gridEnd - blockStart + 1 < PEAK_EDGE_MIN_BLOCK_S) return gridEnd
         // maxOf, because a block the grid already made longer than the limit is left as it is.
         val furthest = minOf(sessionLast, maxOf(gridEnd, blockStart + PEAK_MAX_BLOCK_S - 1))
         var end = gridEnd
-        while (end < furthest && edgeIsOnOneCourse(values, end)) {
+        while (end < furthest &&
+            (edgeIsOnOneCourse(values, end) ||
+                edgeIsAboveBlockPercentile(values, blockStart, end, scratch))
+        ) {
             end = minOf(furthest, end + PEAK_EDGE_STEP_S)
         }
         return end
@@ -418,6 +471,29 @@ internal object DynamicHrrSignals {
         var spread = 0.0
         for (i in from..end) spread += abs(values[i] - mean)
         return abs(values[end] - values[from]) > 2.0 * (spread / PEAK_EDGE_PROBE_S)
+    }
+
+    /**
+     * Whether the mean of the [PEAK_LEVEL_PROBE_S] seconds ending at [end] stands above the reading
+     * at [PEAK_LEVEL_FRAC] of [blockStart]..[end].
+     *
+     * The threshold is the block's own reading at that share, so it rises as high readings join the
+     * block: a stretch that levels off stops passing once enough of it has been taken in. A missing
+     * second ends the test rather than being skipped, as in [edgeIsOnOneCourse].
+     */
+    private fun edgeIsAboveBlockPercentile(
+        values: DoubleArray,
+        blockStart: Int,
+        end: Int,
+        scratch: DoubleArray,
+    ): Boolean {
+        var sum = 0.0
+        for (i in (end - PEAK_LEVEL_PROBE_S + 1)..end) {
+            if (values[i].isNaN()) return false
+            sum += values[i]
+        }
+        val level = rankedReading(values, blockStart..end, PEAK_LEVEL_FRAC, scratch)
+        return !level.isNaN() && sum / PEAK_LEVEL_PROBE_S > level
     }
 
     /**
