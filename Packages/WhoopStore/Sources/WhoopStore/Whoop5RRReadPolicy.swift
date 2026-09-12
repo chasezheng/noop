@@ -4,13 +4,15 @@ import WhoopProtocol
 extension WhoopStore {
     /// The transports a WHOOP 5 window may be SCORED through, as a SQL list.
     ///
-    /// One constant rather than a literal per query. `rrIntervals` pins a window to the lowest of these
-    /// present, and `firstScorableWhoop5RRTimestamp` reports when the first of them was banked, so the
-    /// day the app tells a wearer its scoring begins is derived from the same set the scoring uses. Two
-    /// literals would let those drift apart silently, and the drift would show as an explanation that
-    /// names the wrong date. Type-40 live (6) is deliberately absent: it is a labelling channel that
-    /// standard BLE (7) already covers beat for beat.
+    /// `rrIntervals` selects between these per second, and `firstScorableWhoop5RRTimestamp` reports
+    /// when the first of them was banked, so the day the app tells a wearer its scoring begins is
+    /// derived from the same set the scoring uses. Type-40 live (6) is deliberately absent: it is a
+    /// labelling channel that standard BLE (7) already covers beat for beat.
     static let scorableWhoop5Channels = "(5, 7)"
+
+    /// Seconds by which standard BLE stamps a beat later than the history record carrying the same
+    /// beat. Twin of Kotlin `WHOOP5_STANDARD_LAG_S`.
+    static let whoop5StandardLagS = 1
 
     /// The earliest beat this device has banked that the unit policy can actually score, or nil when it
     /// has none at all.

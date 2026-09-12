@@ -307,6 +307,32 @@ class Whoop5RRSqliteTest {
         ).use { it.executeUpdate() }
     }
 
+    /** Per-second selection, with standard BLE matched against the second history stamped it at.
+     *
+     *  A window-wide choice returned nothing for any second outside the chosen transport's span, so a
+     *  day whose offload had reached only part of it read as no beats rather than as fewer. */
+    @Test fun perSecondSelectionPrefersHistoryAndKeepsStandardBleElsewhere() = runBlocking {
+        registry("5.0 MG")
+        // The same beat on both transports: history at 1000, standard BLE one second later.
+        insertRr(ts = 1000L, channel = 5)
+        insertRr(ts = 1001L, channel = 7)
+        // Standard BLE alone, hours away from any history row.
+        insertRr(ts = 9000L, channel = 7)
+        // History alone.
+        insertRr(ts = 5000L, channel = 5)
+        val got = repo.rrIntervalsForDevice(id, 0L, 10_000L).map { it.ts to it.srcChannel }
+        assertEquals(listOf(1000L to 5, 5000L to 5, 9000L to 7), got)
+    }
+
+    /** A suspect history row must not shadow the standard-BLE beat it would otherwise displace. */
+    @Test fun perSecondSelectionIgnoresSuspectHistoryWhenChoosing() = runBlocking {
+        registry("5.0 MG")
+        insertRr(ts = 2000L, channel = 5, suspect = 1)
+        insertRr(ts = 2001L, channel = 7)
+        val got = repo.rrIntervalsForDevice(id, 0L, 10_000L).map { it.ts to it.srcChannel }
+        assertEquals(listOf(2001L to 7), got)
+    }
+
     @Test fun sourceFingerprintQueriesUseCoveringIndex() {
         val plan = query("EXPLAIN QUERY PLAN $ANALYSIS_FINGERPRINT_SQL") { it.getString("detail") }
         assertEquals(3, plan.count { it.contains("USING COVERING INDEX rrInterval_source_suspect") })
@@ -387,7 +413,7 @@ class Whoop5RRSqliteTest {
         assertNotEquals("confirmed WHOOP 4 still stages from the same R-R", baseline, restage())
     }
 
-    @Test fun actualNightlySlidingWindowDoesNotSpliceStandardIntoHistoricalSource() = runBlocking {
+    @Test fun actualNightlySlidingWindowScoresStandardBeatsOutsideHistorysSeconds() = runBlocking {
         registry("WHOOP")
         registry("5.0 MG", owner = "new-five")
         activate("new-five")
@@ -414,7 +440,8 @@ class Whoop5RRSqliteTest {
             .single { it.day == AnalyticsEngine.dayString(end, offset) }
         assertEquals(60.0, scored.sleepMin!!, 0.001)
         assertEquals(60, scored.rhr)
-        assertNull("the older history-only window cannot reuse standard beats from its overlap", scored.hrv)
+        assertNotNull("a lone history beat outside the night no longer suppresses its standard beats",
+            scored.hrv)
     }
 
     @Test fun rawCsvPreservesMixedTransportsWhileScoringSelectsHistory() = runBlocking {
@@ -426,7 +453,7 @@ class Whoop5RRSqliteTest {
             RrRow(104, 600, RrSourceChannel.WHOOP5_HISTORICAL),
         )), id)
         sql("UPDATE rrInterval SET tsSuspect = 1 WHERE ts = 104")
-        assertEquals(listOf(900), read().map { it.rrMs })
+        assertEquals(listOf(900, 700), read().map { it.rrMs })
         val out = StringWriter()
         val counts = RawSensorExport.writeCsv(out, repo, id, 100, 104)
         assertEquals(4, counts["rr"])
@@ -438,14 +465,16 @@ class Whoop5RRSqliteTest {
         assertEquals(listOf(800, 700), repo.rawRrIntervalsForDevice(id, 102, 104, 2).map { it.rrMs })
     }
 
-    @Test fun sourceSelectionPrecedesLimitAndSharesBoundsAndQuarantine() = runBlocking {
+    @Test fun sourceSelectionSharesBoundsAndQuarantineAndPrecedesLimit() = runBlocking {
         repo.insert(StreamBatch(rr = (100L until 200L).map { RrRow(it, 1000, RrSourceChannel.WHOOP5_STANDARD) }
             + RrRow(200, 900, RrSourceChannel.WHOOP5_HISTORICAL)
             + RrRow(201, 800, RrSourceChannel.WHOOP5_REALTIME)), id)
-        assertEquals(listOf(900), read(limit = 1).map { it.rrMs })
+        assertEquals(listOf(1000), read(limit = 1).map { it.rrMs })
+        assertEquals(listOf(900), read(from = 200, limit = 1).map { it.rrMs })
         assertEquals(listOf(1000), read(to = 199, limit = 1).map { it.rrMs })
         sql("UPDATE rrInterval SET tsSuspect = 1 WHERE ts = 200")
         assertEquals(listOf(1000), read(limit = 1).map { it.rrMs })
+        assertTrue(read(from = 200).isEmpty())
         assertTrue(read(from = 201).isEmpty())
     }
 

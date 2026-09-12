@@ -22,7 +22,7 @@ import WhoopStore
 ///
 /// `activeKcal` is the surplus above resting metabolism, which is the quantity Apple Health and
 /// Health Connect write as active energy. `basalKcal` is resting metabolism over the elapsed day, and
-/// `totalKcal` is their sum. Twin of Kotlin `DayEnergy`.
+/// `totalKcal` is their sum.
 public struct DayEnergy: Equatable, Sendable {
     public let totalKcal: Double
     public let basalKcal: Double

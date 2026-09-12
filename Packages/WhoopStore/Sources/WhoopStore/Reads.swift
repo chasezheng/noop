@@ -438,21 +438,27 @@ extension WhoopStore {
         try syncRead { db in
             let strictWhoop5 = try Self.isWhoop5RRSource(db: db, deviceId: deviceId,
                 unlabelledAliasOfWhoop5: unlabelledAliasOfWhoop5)
-            // One transport for the complete requested interval. Legacy WHOOP 5 rows mix units and
-            // origins, so they remain stored but cannot be converted or spliced into a scored beat train.
-            // This subquery uses the SAME time/suspect predicates as the outer read, before LIMIT.
+            // One transport per SECOND: history (5), or standard BLE (7) where no history row covers
+            // that second. The two carry the same beats, standard BLE stamped `whoop5StandardLagS`
+            // second later, so the match is made against `ts - 1`. Rows keep their own timestamps.
+            // Legacy WHOOP 5 rows carry no channel and stay unscored.
+            //
+            // The unary `+` is required. Without it SQLite serves the inner lookup from
+            // `rrInterval_source_suspect` instead of seeking the primary key, slowing the query.
+            // Twin of Kotlin `WHOOP5_RR_INTERVALS_SQL`.
             let sourcePredicate = strictWhoop5 ? """
-                srcChannel = (SELECT MIN(srcChannel) FROM rrInterval
-                    WHERE deviceId = :d AND ts >= :f AND ts <= :t AND srcChannel IN \(Self.scorableWhoop5Channels)
-                    AND (tsSuspect IS NULL OR tsSuspect <> 1))
+                (r.srcChannel = 5 OR (r.srcChannel = 7 AND NOT EXISTS (
+                    SELECT 1 FROM rrInterval AS i WHERE i.deviceId = r.deviceId
+                    AND i.ts = r.ts - \(Self.whoop5StandardLagS) AND +i.srcChannel = 5
+                    AND (i.tsSuspect IS NULL OR i.tsSuspect <> 1))))
                 """ : "1"
             return try Row.fetchAll(db, sql: """
-                SELECT ts, rrMs, srcChannel, ord, seq FROM rrInterval
-                WHERE deviceId = :d AND ts >= :f AND ts <= :t
-                AND (srcChannel IS NULL OR srcChannel <> :rrx)
+                SELECT r.ts, r.rrMs, r.srcChannel, r.ord, r.seq FROM rrInterval AS r
+                WHERE r.deviceId = :d AND r.ts >= :f AND r.ts <= :t
+                AND (r.srcChannel IS NULL OR r.srcChannel <> :rrx)
                 AND \(sourcePredicate)
-                AND (tsSuspect IS NULL OR tsSuspect <> 1)   -- #1073: exclude future-stamped beats
-                ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC LIMIT :lim
+                AND (r.tsSuspect IS NULL OR r.tsSuspect <> 1)   -- #1073: exclude future-stamped beats
+                ORDER BY r.ts ASC, r.ord ASC, r.rrMs ASC, r.seq ASC LIMIT :lim
                 """, arguments: ["d": deviceId, "f": from, "t": to,
                                  "rrx": RRSourceChannel.spo2Ibi.rawValue, "lim": limit])
                 .map { row in

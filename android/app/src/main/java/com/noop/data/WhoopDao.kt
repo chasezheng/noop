@@ -93,22 +93,36 @@ internal const val RR_INTERVALS_SQL =
 
 /** The transports a WHOOP 5 window may be SCORED through, as a SQL list.
  *
- *  One constant rather than a literal per query. [WHOOP5_RR_INTERVALS_SQL] pins a window to the lowest
- *  of these present, and [FIRST_SCORABLE_WHOOP5_RR_SQL] reports when the first of them was banked, so
- *  the day the app tells a wearer its scoring begins is derived from the same set the scoring uses. Two
- *  literals would let those drift apart silently, and the drift would show as an explanation that names
- *  the wrong date. Type-40 live (6) is deliberately absent: it is a labelling channel that standard BLE
- *  (7) already covers beat for beat. Twin of Swift `WhoopStore.scorableWhoop5Channels`. */
+ *  [WHOOP5_RR_INTERVALS_SQL] selects between these per second, and [FIRST_SCORABLE_WHOOP5_RR_SQL]
+ *  reports when the first of them was banked, so the day the app tells a wearer its scoring begins is
+ *  derived from the same set the scoring uses. Type-40 live (6) is deliberately absent: it is a
+ *  labelling channel that standard BLE (7) already covers beat for beat.
+ *  Twin of Swift `WhoopStore.scorableWhoop5Channels`. */
 internal const val SCORABLE_WHOOP5_CHANNELS = "(5, 7)"
 
+/** Seconds by which standard BLE stamps a beat later than the history record carrying the same beat.
+ *  Twin of Swift `WhoopStore.whoop5StandardLagS`. */
+internal const val WHOOP5_STANDARD_LAG_S = 1
+
+/**
+ * One transport per second: history (5), or standard BLE (7) where no history row covers that second.
+ *
+ * The two transports carry the same beats. Standard BLE stamps them [WHOOP5_STANDARD_LAG_S] second
+ * later, so the match is made against `ts - 1`, not `ts`.
+ *
+ * Rows are returned on their own timestamps; only the match is shifted.
+ *
+ * The unary `+` is required. Without it SQLite serves the inner lookup from
+ * `rrInterval_source_suspect` instead of seeking the primary key, slowing the query.
+ */
 internal const val WHOOP5_RR_INTERVALS_SQL =
-    "SELECT * FROM rrInterval WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
-    "AND (tsSuspect IS NULL OR tsSuspect <> 1) " +
-    "AND srcChannel = (SELECT MIN(srcChannel) FROM rrInterval " +
-    "WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to AND srcChannel IN " +
-    SCORABLE_WHOOP5_CHANNELS + " " +
-    "AND (tsSuspect IS NULL OR tsSuspect <> 1)) " +
-    "ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC LIMIT :limit"
+    "SELECT * FROM rrInterval AS r WHERE r.deviceId = :deviceId AND r.ts >= :from AND r.ts <= :to " +
+    "AND (r.tsSuspect IS NULL OR r.tsSuspect <> 1) " +
+    "AND (r.srcChannel = 5 OR (r.srcChannel = 7 AND NOT EXISTS (" +
+    "SELECT 1 FROM rrInterval AS i WHERE i.deviceId = r.deviceId " +
+    "AND i.ts = r.ts - " + WHOOP5_STANDARD_LAG_S + " AND +i.srcChannel = 5 " +
+    "AND (i.tsSuspect IS NULL OR i.tsSuspect <> 1)))) " +
+    "ORDER BY r.ts ASC, r.ord ASC, r.rrMs ASC, r.seq ASC LIMIT :limit"
 
 /** The earliest beat a device has banked AT ALL, labelled or not, or null when it has none. The lower
  *  bound on the "cannot be scored" explanation: it separates history this strap actually recorded from

@@ -204,7 +204,7 @@ public enum Calories {
     /// true whether or not a sample landed; nil falls back to the span the samples themselves cover.
     /// Active accrues only from the surplus above the resting rate, over measured wear, so no second
     /// is counted twice. The two answer different questions and are reported apart so that a caller
-    /// cannot conflate them. Twin of Kotlin `estimateDayEnergy`.
+    /// cannot conflate them. Twin of Kotlin `estimateDayEnergy(hrSamples:)`.
     public static func estimateDayEnergy(_ hrSamples: [HRSample],
                                          profile: UserProfile,
                                          hrmax: Double?,
